@@ -15,7 +15,6 @@ all:
 	$(MAKE) -C depends/libyarn $@
 	$(MAKE) -C src $@
 	$(MAKE) -C config $@
-	$(MAKE) -C contrib $@
 	$(MAKE) -C tools $@
 	$(MAKE) -C ranger-plugin $@
 	@echo "All of HAWQ successfully made. Ready to install."
@@ -27,7 +26,6 @@ install:
 	$(MAKE) -C depends/libyarn $@
 	$(MAKE) -C src $@
 	$(MAKE) -C config $@
-	$(MAKE) -C contrib $@
 	$(MAKE) -C tools $@
 	$(MAKE) -C ranger-plugin $@
 	$(MAKE) -C dist $@
@@ -37,20 +35,16 @@ installdirs uninstall:
 #	$(MAKE) -C doc $@
 	$(MAKE) -C src $@
 	$(MAKE) -C config $@
-	$(MAKE) -C contrib $@
 	$(MAKE) -C ranger-plugin $@
 
 distprep:
 #	$(MAKE) -C doc $@
 	$(MAKE) -C src $@
 	$(MAKE) -C config $@
-	$(MAKE) -C contrib $@
 
 rpm:
-	$(MAKE) -C contrib/hawq-package $@
 	$(MAKE) -C pxf $@
 	$(MAKE) -C ranger-plugin $@
-	$(MAKE) -C contrib/hawq-package rpm-tarball
 
 feature-test:
 	$(MAKE) -C src feature-test
