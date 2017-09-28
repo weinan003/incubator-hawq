@@ -8,13 +8,97 @@ PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(runtpch1);
 
-#define TMP_COLUMNS 2
-#define TMP_BUFFER 1024
+#define BUFFER_SIZE 1024
+#define relname "lineitem"
+#define TUPLE_NUM 10000000
 
-struct tpch1_args {
-    int32     id;
-    char    text[TMP_BUFFER];
-};
+typedef struct lineitem_for_query1{
+    double  l_quantity;
+    double  l_extendedprice;
+    double  l_discount;
+    double  l_tax;
+    char    l_returnflag;
+    char    l_linestatus;
+    char    l_shipdate[11];
+} lineitem_for_query1;
+
+lineitem_for_query1 read_tuples[TUPLE_NUM];
+bool project[16] = {0};
+
+typedef struct SegFile{
+    char    filePath[1000];
+    File    file;
+    ParquetMetadata parquetMetadata;
+    CompactProtocol *footerProtocol;
+} SegFile;
+
+typedef struct ParquetScan{
+    Relation    rel;
+    SegFile    *segFile;
+} ParquetScan;
+
+static File DoOpenFile(char *filePath)
+{
+    int fileFlags = O_RDONLY | PG_BINARY;
+    int fileMode = 0400; /* File mode is S_IRUSR 00400 user has read permission */
+    File file;
+    file = PathNameOpenFile(filePath, fileFlags, fileMode);
+    
+    return file;
+}
+
+static void BeginScan(ParquetScan *scan)
+{
+    Oid     relid;
+    int32   fileSegNo;
+
+    project[4] = 1;
+    project[5] = 1;
+    project[6] = 1;
+    project[7] = 1;
+    project[8] = 1;
+    project[9] = 1;
+    project[10] = 1;
+    
+    relid = RelnameGetRelid(relname);
+    scan->rel = heap_open(relid, AccessShareLock);
+    scan->segFile = (SegFile *) malloc(sizeof(SegFile));
+    MakeAOSegmentFileName(scan->rel, 1, -1, &fileSegNo, scan->segFile->filePath);
+    scan->segFile->file = DoOpenFile(scan->segFile->filePath);
+}
+
+static void ReadFileMeatadata(ParquetScan scan)
+{
+    readParquetFooter(scan->segFile->file, &(scan->segFile->parquetMetadata),
+            &(scan->segFile->footerProtocol), logicalEof, filePathName);
+}
+
+static void EndScan(Relation rel)
+{
+    heap_close(rel);
+}
+
+
+static void ReadRowGroupInfo()
+{
+}
+
+static void ReadRowGroupData()
+{
+}
+
+static bool ReadNextRowGroup()
+{
+}
+
+static void ReadDataFromLineitem()
+{
+    ParquetScan scan;
+
+    BeginScan(&scan);
+    ReadFileMetadata(&scan);
+    EndScan(&scan);
+}
 
 Datum runtpch1(PG_FUNCTION_ARGS)
 {
