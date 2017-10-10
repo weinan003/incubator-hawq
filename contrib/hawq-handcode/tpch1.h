@@ -45,6 +45,7 @@ struct DataItem {
 } DataItem;
 
 struct DataItem* hashArray[SIZE];
+struct DataItem* results[SIZE];
 struct DataItem* dummyItem;
 struct DataItem* item;
 
@@ -68,12 +69,13 @@ typedef struct ParquetFormatScan{
 #define BUFFER_SCALE_FACTOR	1.2
 #define BUFFER_SIZE_LIMIT_BEFORE_SCALED ((Size) ((MaxAllocSize) * 1.0 / (BUFFER_SCALE_FACTOR)))
 #define BUFFER_SIZE 1024
-#define TMP_COLUMNS 2
+#define TMP_COLUMNS 10
 #define relname "lineitem"
 #define MAX_TUPLE_NUM 10000000
 
 lineitem_for_query1 read_tuples[MAX_TUPLE_NUM];
 int	total_tuples_num = 0;
+int	result_num = 0;
 bool projs[16] = {0};
 
 #endif

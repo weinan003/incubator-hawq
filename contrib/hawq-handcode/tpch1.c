@@ -43,7 +43,7 @@ static void ReadFileMetadata(ParquetFormatScan *scan)
     /*
      * Now, the eof value is hard-coded, it should be the length of data file on hdfs.
      */
-    int64 eof = 2594;
+    int64 eof = 37558;
     scan->segFile->file = DoOpenFile(scan->segFile->filePath);
     readParquetFooter(scan->segFile->file, &(scan->segFile->parquetMetadata),
             &(scan->segFile->footerProtocol), eof, scan->segFile->filePath);
@@ -354,6 +354,7 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
     tmp = OidOutputFunctionCall(typoutput, values[10]);
     strncpy(read_tuples[total_tuples_num].l_shipdate, tmp, 10);
 
+/*
     elog(NOTICE, "read_tuples[%d].l_quantity=%lf", total_tuples_num, read_tuples[total_tuples_num].l_quantity);
     elog(NOTICE, "read_tuples[%d].l_extendedprice=%lf", total_tuples_num, read_tuples[total_tuples_num].l_extendedprice);
     elog(NOTICE, "read_tuples[%d].l_discount=%lf", total_tuples_num, read_tuples[total_tuples_num].l_discount);
@@ -361,6 +362,7 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
     elog(NOTICE, "read_tuples[%d].l_returnflag=%c", total_tuples_num, read_tuples[total_tuples_num].l_returnflag);
     elog(NOTICE, "read_tuples[%d].l_linestatus=%c", total_tuples_num, read_tuples[total_tuples_num].l_linestatus);
     elog(NOTICE, "read_tuples[%d].l_shipdate=%s", total_tuples_num, read_tuples[total_tuples_num].l_shipdate);
+*/
 
     total_tuples_num ++;
 }
@@ -368,7 +370,6 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
 static void ReadTuplesFromRowGroup(ParquetFormatScan *scan)
 {
     while (scan->rowGroupReader.rowRead < scan->rowGroupReader.rowCount){
-    		elog(NOTICE, "rowRead=%d, rowCount=%d", scan->rowGroupReader.rowRead, scan->rowGroupReader.rowCount);
         ReadTupleFromRowGroup(scan);   
     }
     
@@ -381,7 +382,6 @@ static void ReadDataFromLineitem()
 
     BeginScan(&scan);
     ReadFileMetadata(&scan);
-    elog(NOTICE, "rowGroupCount=%d", scan.segFile->rowGroupCount);
     for (int i = 0 ; i < scan.segFile->rowGroupCount; i++) {
         ReadNextRowGroup(&scan);
         ReadTuplesFromRowGroup(&scan);
@@ -422,7 +422,8 @@ void display() {
     int i = 0;
 
     for (i = 0; i < SIZE; i++) {
-        if (hashArray[i] != NULL)
+        if (hashArray[i] != NULL) {
+            /*
             elog(NOTICE,"l_returnflag:%18c\n, l_linestatus:%18c\n , sum(l_quantity):%18lf\n , "
                     "sum(base_price):%18lf\n , sum(disc_price):%18lf\n , sum(charge):%18lf\n ,"
                     "avg(l_quantity):%18lf\n , avg(base_price):%18lf\n , avg(discount):%18lf\n , "
@@ -437,6 +438,10 @@ void display() {
                     hashArray[i]->data.sum_base_price / hashArray[i]->data.count,
                     hashArray[i]->data.sum_discount / hashArray[i]->data.count,
                     hashArray[i]->data.count);
+            */
+            results[result_num] = hashArray[i];
+            result_num ++;
+        }
     }
 
 }
@@ -501,16 +506,24 @@ Datum runtpch1(PG_FUNCTION_ARGS)
         TupleDesc tupledesc = CreateTemplateTupleDesc(
                                     TMP_COLUMNS,
                                     false);
-        TupleDescInitEntry(tupledesc, (AttrNumber) 1,  "id",   TEXTOID,  -1, 0);
-        TupleDescInitEntry(tupledesc, (AttrNumber) 2,  "text", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 1, "l_returnflag", TEXTOID,  -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 2, "l_linestatus", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 3, "sum(l_quantity)", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 4, "sum(base_price)", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 5, "sum(disc_price)", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 6, "sum(charge)", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 7, "avg(l_quantity)", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 8, "avg(base_price)", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 9, "avg(discount)", TEXTOID, -1, 0);
+        TupleDescInitEntry(tupledesc, (AttrNumber) 10, "count_order", TEXTOID, -1, 0);
 
         funcctx->tuple_desc = BlessTupleDesc(tupledesc);
-
-        funcctx->max_calls = 6;
 
         ReadDataFromLineitem();
 
 		tpch_query1();
+
+        funcctx->max_calls = result_num;
 
         /* Return to original context when allocating transient memory */
         MemoryContextSwitchTo(oldcontext);
@@ -523,19 +536,37 @@ Datum runtpch1(PG_FUNCTION_ARGS)
         Datum       values[TMP_COLUMNS];
         bool        nulls[TMP_COLUMNS];
         char        buf[BUFFER_SIZE] = {'\0'};
+        int         i;
 
-        for (int i=0;i<TMP_COLUMNS;i++)
+        for (i=0;i<TMP_COLUMNS;i++)
         {
             nulls[i] = false;
         }
 
         args = funcctx->user_fctx;
 
-        snprintf(buf, sizeof(buf), "%d", 1);
-        //values[0] = Int32GetDatum(args->id);
-        //values[1] = CStringGetDatum(args->text);
+        i = funcctx->call_cntr;
+        snprintf(buf, sizeof(buf), "%c", results[i]->data.lineitem_data.l_returnflag);
         values[0] = PointerGetDatum(cstring_to_text(buf));
-        values[1] = PointerGetDatum(cstring_to_text("aaa"));
+        snprintf(buf, sizeof(buf), "%c", results[i]->data.lineitem_data.l_linestatus);
+        values[1] = PointerGetDatum(cstring_to_text(buf));
+        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_qty);
+        values[2] = PointerGetDatum(cstring_to_text(buf));
+        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_base_price);
+        values[3] = PointerGetDatum(cstring_to_text(buf));
+        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_disc_price);
+        values[4] = PointerGetDatum(cstring_to_text(buf));
+        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_charge);
+        values[5] = PointerGetDatum(cstring_to_text(buf));
+        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_qty / results[i]->data.count);
+        values[6] = PointerGetDatum(cstring_to_text(buf));
+        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_base_price / results[i]->data.count);
+        values[7] = PointerGetDatum(cstring_to_text(buf));
+        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_discount / results[i]->data.count);
+        values[8] = PointerGetDatum(cstring_to_text(buf));
+        snprintf(buf, sizeof(buf), "%lf", results[i]->data.count);
+        values[9] = PointerGetDatum(cstring_to_text(buf));
+        
         /* Build and return the tuple. */
         tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
         result = HeapTupleGetDatum(tuple);
