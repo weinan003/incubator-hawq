@@ -3,7 +3,7 @@ OBJS    = rm.o tpch1.o
 
 PG_CXXFLAGS = -Wall -O0 -g -std=c++11
 PG_CPPFLAGS = -I$(libpq_srcdir) -I/Users/chwang/Code/incubator-hawq/src/include/resourcemanager
-PG_LIBS = $(libpq_pgport)
+PG_LIBS = $(libpq_pgport) 
 
 PG_CONFIG = pg_config
 
@@ -16,3 +16,5 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
+
+SHLIB_LINK += $(filter -lz -lsnappy, $(LIBS))
