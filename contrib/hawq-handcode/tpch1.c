@@ -1,16 +1,3 @@
-#include "postgres.h"
-#include "fmgr.h"
-#include "funcapi.h"
-#include "cdb/cdbparquetfooterprocessor.h"
-#include "cdb/cdbparquetfooterserializer.h"
-#include "access/parquetmetadata_c++/MetadataInterface.h"
-#include "cdb/cdbparquetrowgroup.h"
-#include "utils/memutils.h"
-#include "utils/palloc.h"
-#include "snappy-c.h"
-#include "zlib.h"
-#include "../backend/access/parquet/parquetam.c"
-#include "../backend/cdb/cdbparquetcolumn.c"
 #include "tpch1.h"
 
 extern text *cstring_to_text(const char *s);
@@ -56,7 +43,7 @@ static void ReadFileMetadata(ParquetFormatScan *scan)
     /*
      * Now, the eof value is hard-coded, it should be the length of data file on hdfs.
      */
-    int64 eof = 37558;
+    int64 eof = 2594;
     scan->segFile->file = DoOpenFile(scan->segFile->filePath);
     readParquetFooter(scan->segFile->file, &(scan->segFile->parquetMetadata),
             &(scan->segFile->footerProtocol), eof, scan->segFile->filePath);
@@ -404,6 +391,94 @@ static void ReadDataFromLineitem()
     EndScan(&scan);
 }
 
+int hashCode(char key1, char key2) {
+    return key1 * 256 + key2;
+}
+
+void insert(char key1, char key2, data_for_query1 data) {
+
+    struct DataItem *item = (struct DataItem*) malloc(sizeof(struct DataItem));
+    item->data = data;
+    item->key1 = key1;
+    item->key2 = key2;
+
+    //get the hash
+    int hashIndex = hashCode(key1, key2);
+
+    //move in array until an empty or deleted cell
+    while (hashArray[hashIndex] != NULL && hashArray[hashIndex]->key1 != -1
+            && hashArray[hashIndex]->key2 != -1) {
+        //go to next cell
+        ++hashIndex;
+
+        //wrap around the table
+        hashIndex %= SIZE;
+    }
+
+    hashArray[hashIndex] = item;
+}
+
+void display() {
+    int i = 0;
+
+    for (i = 0; i < SIZE; i++) {
+        if (hashArray[i] != NULL)
+            elog(NOTICE,"l_returnflag:%18c\n, l_linestatus:%18c\n , sum(l_quantity):%18lf\n , "
+                    "sum(base_price):%18lf\n , sum(disc_price):%18lf\n , sum(charge):%18lf\n ,"
+                    "avg(l_quantity):%18lf\n , avg(base_price):%18lf\n , avg(discount):%18lf\n , "
+                    "count_order:%18lf \n",
+                    hashArray[i]->data.lineitem_data.l_returnflag,
+                    hashArray[i]->data.lineitem_data.l_linestatus,
+                    hashArray[i]->data.sum_qty,
+                    hashArray[i]->data.sum_base_price,
+                    hashArray[i]->data.sum_disc_price,
+                    hashArray[i]->data.sum_charge,
+                    hashArray[i]->data.sum_qty / hashArray[i]->data.count,
+                    hashArray[i]->data.sum_base_price / hashArray[i]->data.count,
+                    hashArray[i]->data.sum_discount / hashArray[i]->data.count,
+                    hashArray[i]->data.count);
+    }
+
+}
+
+static void tpch_query1() {
+    struct DataItem * entry = (struct DataItem*) malloc(sizeof(struct DataItem));
+    entry->key1 = -1;
+    entry->key2 = -1;
+    entry->data.lineitem_data.l_quantity = -1;
+    entry->data.lineitem_data.l_extendedprice = -1;
+    entry->data.lineitem_data.l_discount = -1;
+    entry->data.lineitem_data.l_tax = -1;
+    entry->data.sum_qty = -1;
+    entry->data.sum_base_price = -1;
+    entry->data.temp = -1;
+    entry->data.sum_disc_price = -1;
+    entry->data.sum_charge = -1;
+    entry->data.sum_discount = -1;
+    entry->data.count = -1;
+
+    for (int i = 0; i < total_tuples_num; i++) {
+        entry->data.lineitem_data = read_tuples[i];
+        // Calc sum(l_quantity)
+        entry->data.sum_qty += read_tuples[i].l_quantity;
+        // Calc sum(l_extendedprice)
+        entry->data.sum_base_price += read_tuples[i].l_extendedprice;
+        // Calc l_extendedprice * (1 - l_discount)
+        entry->data.temp = read_tuples[i].l_extendedprice * (1 - read_tuples[i].l_discount);
+        entry->data.sum_disc_price += entry->data.temp;
+        // Calc l_extendedprice * (1 - l_discount) * (1 + l_tax)
+        entry->data.sum_charge += entry->data.temp * (1 + read_tuples[i].l_tax);
+        // Calc sum(l_discount) (later will divide by count to make avg())
+        entry->data.sum_discount += read_tuples[i].l_discount;
+        // Calc count() within the group
+        entry->data.count++;
+        // Insert into hash table;
+        insert(read_tuples[i].l_returnflag, read_tuples[i].l_linestatus, entry->data);
+
+    }
+    display();
+}
+
 Datum runtpch1(PG_FUNCTION_ARGS)
 {
     FuncCallContext *funcctx    = NULL;
@@ -434,6 +509,8 @@ Datum runtpch1(PG_FUNCTION_ARGS)
         funcctx->max_calls = 6;
 
         ReadDataFromLineitem();
+
+		tpch_query1();
 
         /* Return to original context when allocating transient memory */
         MemoryContextSwitchTo(oldcontext);
