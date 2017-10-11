@@ -56,7 +56,6 @@ struct DataItem {
 
 struct DataItem* hashArray[SIZE];
 struct DataItem* results[SIZE];
-struct DataItem* dummyItem;
 struct DataItem* item;
 
 typedef struct SegFile{

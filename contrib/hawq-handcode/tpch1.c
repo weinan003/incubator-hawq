@@ -449,21 +449,39 @@ void insert(char key1, char key2, data_for_query1 data) {
     //get the hash
     int hashIndex = hashCode(key1, key2);
 
-    //move in array until an empty or deleted cell
-    while (hashArray[hashIndex] != NULL && hashArray[hashIndex]->key1 != -1
-            && hashArray[hashIndex]->key2 != -1) {
-        //go to next cell
-        ++hashIndex;
-
+    if (hashArray[hashIndex] != NULL && hashArray[hashIndex]->key1 != -1
+        && hashArray[hashIndex]->key2 != -1) {
+        // Calc sum(l_quantity)
+        hashArray[hashIndex]->data.sum_qty += data.lineitem_data.l_quantity;
+        // Calc sum(l_extendedprice)
+        hashArray[hashIndex]->data.sum_base_price += data.lineitem_data.l_extendedprice;
+        // Calc l_extendedprice * (1 - l_discount)
+        hashArray[hashIndex]->data.temp = data.lineitem_data.l_extendedprice * (1 - data.lineitem_data.l_discount);
+        hashArray[hashIndex]->data.sum_disc_price += hashArray[hashIndex]->data.temp;
+        // Calc l_extendedprice * (1 - l_discount) * (1 + l_tax)
+        hashArray[hashIndex]->data.sum_charge += hashArray[hashIndex]->data.temp * (1 + data.lineitem_data.l_tax);
+        // Calc sum(l_discount) (later will divide by count to make avg())
+        hashArray[hashIndex]->data.sum_discount += data.lineitem_data.l_discount;
+        // Calc count() within the group
+        hashArray[hashIndex]->data.count++;
         //wrap around the table
-        hashIndex %= SIZE;
+        //hashIndex %= SIZE;
     }
-
-    hashArray[hashIndex] = item;
+    else {
+        item->data.sum_qty = item->data.lineitem_data.l_quantity;
+        item->data.sum_base_price = item->data.lineitem_data.l_extendedprice;
+        item->data.temp = item->data.lineitem_data.l_extendedprice * (1 - item->data.lineitem_data.l_discount);
+        item->data.sum_disc_price = item->data.temp;
+        item->data.sum_charge = item->data.temp * (1 + item->data.lineitem_data.l_tax);
+        item->data.sum_discount = item->data.lineitem_data.l_discount;
+        item->data.count = 1;
+        hashArray[hashIndex] = item;
+    }
 }
 
 void display() {
     int i = 0;
+    result_num = 0;
 
     for (i = 0; i < SIZE; i++) {
         if (hashArray[i] != NULL) {
@@ -490,40 +508,30 @@ void display() {
 
 }
 
+
+void destroy_hashArray() {
+    for (int i = 0; i < SIZE; i++) {
+        if (hashArray[i] != NULL) {
+            free(hashArray[i]);
+            hashArray[i] = NULL;
+        }
+    }
+}
+
 static void tpch_query1() {
-    struct DataItem * entry = (struct DataItem*) malloc(sizeof(struct DataItem));
-    entry->key1 = -1;
-    entry->key2 = -1;
-    entry->data.lineitem_data.l_quantity = -1;
-    entry->data.lineitem_data.l_extendedprice = -1;
-    entry->data.lineitem_data.l_discount = -1;
-    entry->data.lineitem_data.l_tax = -1;
-    entry->data.sum_qty = -1;
-    entry->data.sum_base_price = -1;
-    entry->data.temp = -1;
-    entry->data.sum_disc_price = -1;
-    entry->data.sum_charge = -1;
-    entry->data.sum_discount = -1;
-    entry->data.count = -1;
+    struct DataItem entry;
+    entry.data.sum_qty = 0;
+    entry.data.sum_base_price = 0;
+    entry.data.temp = 0;
+    entry.data.sum_disc_price = 0;
+    entry.data.sum_charge = 0;
+    entry.data.sum_discount = 0;
+    entry.data.count = 0;
 
     for (int i = 0; i < total_tuples_num; i++) {
-        entry->data.lineitem_data = read_tuples[i];
-        // Calc sum(l_quantity)
-        entry->data.sum_qty += read_tuples[i].l_quantity;
-        // Calc sum(l_extendedprice)
-        entry->data.sum_base_price += read_tuples[i].l_extendedprice;
-        // Calc l_extendedprice * (1 - l_discount)
-        entry->data.temp = read_tuples[i].l_extendedprice * (1 - read_tuples[i].l_discount);
-        entry->data.sum_disc_price += entry->data.temp;
-        // Calc l_extendedprice * (1 - l_discount) * (1 + l_tax)
-        entry->data.sum_charge += entry->data.temp * (1 + read_tuples[i].l_tax);
-        // Calc sum(l_discount) (later will divide by count to make avg())
-        entry->data.sum_discount += read_tuples[i].l_discount;
-        // Calc count() within the group
-        entry->data.count++;
-        // Insert into hash table;
-        insert(read_tuples[i].l_returnflag, read_tuples[i].l_linestatus, entry->data);
-
+        entry.data.lineitem_data = read_tuples[i];
+        // Insert into hash array.
+        insert(read_tuples[i].l_returnflag, read_tuples[i].l_linestatus, entry.data);
     }
     display();
 }
