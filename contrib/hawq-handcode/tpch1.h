@@ -12,9 +12,17 @@
 #include "utils/palloc.h"
 #include "snappy-c.h"
 #include "zlib.h"
+#include "executor/spi.h"
 #include "../backend/access/parquet/parquetam.c"
 #include "../backend/cdb/cdbparquetcolumn.c"
 
+#define BUFFER_SCALE_FACTOR	1.2
+#define BUFFER_SIZE_LIMIT_BEFORE_SCALED ((Size) ((MaxAllocSize) * 1.0 / (BUFFER_SCALE_FACTOR)))
+#define BUFFER_SIZE 1024
+#define TMP_COLUMNS 10
+#define relname "lineitem"
+#define MAX_TUPLE_NUM 10000000
+#define MAX_SEG_NUM 100000
 #define SIZE 256 * 256
 
 typedef struct lineitem_for_query1{
@@ -26,6 +34,8 @@ typedef struct lineitem_for_query1{
     char    l_linestatus;
     char    l_shipdate[11];
 } lineitem_for_query1;
+
+lineitem_for_query1 read_tuples[MAX_TUPLE_NUM];
 
 typedef struct data_for_query1{
     lineitem_for_query1 lineitem_data;
@@ -66,14 +76,15 @@ typedef struct ParquetFormatScan{
     ParquetRowGroupReader   rowGroupReader;
 } ParquetFormatScan;
 
-#define BUFFER_SCALE_FACTOR	1.2
-#define BUFFER_SIZE_LIMIT_BEFORE_SCALED ((Size) ((MaxAllocSize) * 1.0 / (BUFFER_SCALE_FACTOR)))
-#define BUFFER_SIZE 1024
-#define TMP_COLUMNS 10
-#define relname "lineitem"
-#define MAX_TUPLE_NUM 10000000
+typedef struct FormData_pg_aoseg{
+    int     segno;
+    double  eof;
+    double  tuplecount;
+    double  eofuncompressed;
+} FormData_pg_aoseg;
 
-lineitem_for_query1 read_tuples[MAX_TUPLE_NUM];
+typedef struct FormData_pg_aoseg *Form_pg_aoseg;
+
 int	total_tuples_num = 0;
 int	result_num = 0;
 bool projs[16] = {0};

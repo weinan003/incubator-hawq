@@ -19,7 +19,6 @@ static File DoOpenFile(char *filePath)
 static void BeginScan(ParquetFormatScan *scan)
 {
     Oid     relid;
-    int32   fileSegNo;
 
     projs[4] = true;
     projs[5] = true;
@@ -32,18 +31,47 @@ static void BeginScan(ParquetFormatScan *scan)
     relid = RelnameGetRelid(relname);
     scan->rel = heap_open(relid, AccessShareLock);
     scan->segFile = (SegFile *) palloc0(sizeof(SegFile));
-    MakeAOSegmentFileName(scan->rel, 1, -1, &fileSegNo, scan->segFile->filePath);
     scan->pqs_tupDesc = RelationGetDescr(scan->rel);
     scan->hawqAttrToParquetColChunks = (int*)palloc0(scan->pqs_tupDesc->natts * sizeof(int));
     scan->rowGroupReader.columnReaderCount = 0;
 }
 
-static void ReadFileMetadata(ParquetFormatScan *scan)
+static int GetSegFileInfo(int relid, int *segno, int64 *eof)
 {
-    /*
-     * Now, the eof value is hard-coded, it should be the length of data file on hdfs.
-     */
-    int64 eof = 37558;
+    char    sql[BUFFER_SIZE] = {'\0'};
+    int     cnt;
+    int     ret;
+    int     proc;
+
+    snprintf(sql, sizeof(sql), "SELECT * FROM pg_aoseg.pg_paqseg_%d", relid);
+   
+    SPI_connect();
+    ret = SPI_exec(sql, 0);
+    proc = SPI_processed;
+    if (ret > 0 && SPI_tuptable != NULL) {
+        TupleDesc tupdesc = SPI_tuptable->tupdesc;
+        char    buf[BUFFER_SIZE];
+        int     i, j;
+        
+        for (i = 0; i < proc; i++) {
+            HeapTuple aosegTuple = SPI_tuptable->vals[i];
+            Form_pg_aoseg pa;
+            pa = (Form_pg_aoseg) GETSTRUCT(aosegTuple);
+            segno[i] = pa->segno;
+            eof[i] = (int64) pa->eof;
+            elog(NOTICE, "segno[%d]=%d, eof[%d]=%ld", i, segno[i], i, eof[i]);
+        }
+    }
+    SPI_finish();
+
+    return proc;
+}
+
+static void ReadFileMetadata(ParquetFormatScan *scan, int segno, int64 eof)
+{
+    int32   fileSegNo;
+
+    MakeAOSegmentFileName(scan->rel, segno, -1, &fileSegNo, scan->segFile->filePath);
     scan->segFile->file = DoOpenFile(scan->segFile->filePath);
     readParquetFooter(scan->segFile->file, &(scan->segFile->parquetMetadata),
             &(scan->segFile->footerProtocol), eof, scan->segFile->filePath);
@@ -51,6 +79,7 @@ static void ReadFileMetadata(ParquetFormatScan *scan)
             scan->segFile->parquetMetadata);
     scan->segFile->rowGroupCount = scan->segFile->parquetMetadata->blockCount;
     scan->segFile->rowGroupProcessedCount = 0;
+    elog(NOTICE, "%s=%d", scan->segFile->filePath, scan->segFile->file);
 }
 
 static void EndScan(ParquetFormatScan *scan)
@@ -379,15 +408,30 @@ static void ReadTuplesFromRowGroup(ParquetFormatScan *scan)
 static void ReadDataFromLineitem()
 {
     ParquetFormatScan scan;
+    int segNum;
+    int segno[MAX_SEG_NUM];
+    int64 eof[MAX_SEG_NUM];
 
     BeginScan(&scan);
-    ReadFileMetadata(&scan);
-    for (int i = 0 ; i < scan.segFile->rowGroupCount; i++) {
-        ReadNextRowGroup(&scan);
-        ReadTuplesFromRowGroup(&scan);
+    segNum = GetSegFileInfo(scan.rel->rd_id, segno, eof);
+    for (int i = 0; i < segNum; i++) {
+        ReadFileMetadata(&scan, segno[i], eof[i]);
+        for (int j = 0 ; j < scan.segFile->rowGroupCount; j++) {
+            ReadNextRowGroup(&scan);
+            ReadTuplesFromRowGroup(&scan);
+        }
+        /* file is onpened in ReadFileMetadata() */
+        Assert(scan.segFile->file != -1);
+        FileClose(scan.segFile->file);
+        scan.segFile->file = -1;
+        /*free parquetMetadata and footerProtocol*/
+        endDeserializerFooter(scan.segFile->parquetMetadata, &(scan.segFile->footerProtocol));
+        scan.segFile->footerProtocol = NULL;
+        if (scan.segFile->parquetMetadata != NULL) {
+            freeParquetMetadata(scan.segFile->parquetMetadata);
+            scan.segFile->parquetMetadata = NULL;
+        }
     }
-    /* file is onpened in ReadFileMetadata() */
-    FileClose(scan.segFile->file);
     EndScan(&scan);
 }
 
