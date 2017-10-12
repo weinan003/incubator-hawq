@@ -30,7 +30,6 @@ static void BeginScan(ParquetFormatScan *scan)
     
     relid = RelnameGetRelid(relname);
     scan->rel = heap_open(relid, AccessShareLock);
-    scan->segFile = (SegFile *) palloc0(sizeof(SegFile));
     scan->pqs_tupDesc = RelationGetDescr(scan->rel);
     scan->hawqAttrToParquetColChunks = (int*)palloc0(scan->pqs_tupDesc->natts * sizeof(int));
     scan->rowGroupReader.columnReaderCount = 0;
@@ -71,20 +70,17 @@ static void ReadFileMetadata(ParquetFormatScan *scan, int segno, int64 eof)
 {
     int32   fileSegNo;
 
+    scan->segFile = (SegFile *) palloc0(sizeof(SegFile));
     MakeAOSegmentFileName(scan->rel, segno, -1, &fileSegNo, scan->segFile->filePath);
     scan->segFile->file = DoOpenFile(scan->segFile->filePath);
-    readParquetFooter(scan->segFile->file, &(scan->segFile->parquetMetadata),
+    scan->segFile->fileHandlerForFooter = DoOpenFile(scan->segFile->filePath);
+    readParquetFooter(scan->segFile->fileHandlerForFooter, &(scan->segFile->parquetMetadata),
             &(scan->segFile->footerProtocol), eof, scan->segFile->filePath);
     ValidateParquetSegmentFile(scan->pqs_tupDesc, scan->hawqAttrToParquetColChunks,
             scan->segFile->parquetMetadata);
     scan->segFile->rowGroupCount = scan->segFile->parquetMetadata->blockCount;
     scan->segFile->rowGroupProcessedCount = 0;
-    elog(NOTICE, "%s=%d", scan->segFile->filePath, scan->segFile->file);
-}
-
-static void EndScan(ParquetFormatScan *scan)
-{
-    heap_close(scan->rel, AccessShareLock);
+    elog(NOTICE, "%s, file=%d, fileHandlerForFooter=%d", scan->segFile->filePath, scan->segFile->file, scan->segFile->fileHandlerForFooter);
 }
 
 static void ReadRowGroupInfo(ParquetFormatScan *scan)
@@ -405,6 +401,32 @@ static void ReadTuplesFromRowGroup(ParquetFormatScan *scan)
     ParquetRowGroupReader_FinishedScanRowGroup(&scan->rowGroupReader);
 }
 
+static void FinishReadSegFile(ParquetFormatScan *scan)
+{
+    /* file is onpened in ReadFileMetadata() */
+    Assert(scan->segFile->file != -1);
+    FileClose(scan->segFile->file);
+    scan->segFile->file = -1;
+    Assert(scan->segFile->fileHandlerForFooter!= -1);
+    FileClose(scan->segFile->fileHandlerForFooter);
+    scan->segFile->fileHandlerForFooter = -1;
+    /*free parquetMetadata and footerProtocol*/
+    //endDeserializerFooter(scan.segFile->parquetMetadata, &(scan.segFile->footerProtocol));
+    freeFooterProtocol(scan->segFile->footerProtocol);
+    scan->segFile->footerProtocol = NULL;
+    if (scan->segFile->parquetMetadata != NULL) {
+        freeParquetMetadata(scan->segFile->parquetMetadata);
+        scan->segFile->parquetMetadata = NULL;
+    }
+    free(scan->segFile);
+}
+
+static void EndScan(ParquetFormatScan *scan)
+{
+    //free(scan->hawqAttrToParquetColChunks);
+    heap_close(scan->rel, AccessShareLock);
+}
+
 static void ReadDataFromLineitem()
 {
     ParquetFormatScan scan;
@@ -412,6 +434,7 @@ static void ReadDataFromLineitem()
     int segno[MAX_SEG_NUM];
     int64 eof[MAX_SEG_NUM];
 
+    total_tuples_num = 0;
     BeginScan(&scan);
     segNum = GetSegFileInfo(scan.rel->rd_id, segno, eof);
     for (int i = 0; i < segNum; i++) {
@@ -419,17 +442,6 @@ static void ReadDataFromLineitem()
         for (int j = 0 ; j < scan.segFile->rowGroupCount; j++) {
             ReadNextRowGroup(&scan);
             ReadTuplesFromRowGroup(&scan);
-        }
-        /* file is onpened in ReadFileMetadata() */
-        Assert(scan.segFile->file != -1);
-        FileClose(scan.segFile->file);
-        scan.segFile->file = -1;
-        /*free parquetMetadata and footerProtocol*/
-        endDeserializerFooter(scan.segFile->parquetMetadata, &(scan.segFile->footerProtocol));
-        scan.segFile->footerProtocol = NULL;
-        if (scan.segFile->parquetMetadata != NULL) {
-            freeParquetMetadata(scan.segFile->parquetMetadata);
-            scan.segFile->parquetMetadata = NULL;
         }
     }
     EndScan(&scan);

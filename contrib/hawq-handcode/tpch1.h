@@ -61,6 +61,7 @@ struct DataItem* item;
 typedef struct SegFile{
     char    filePath[1000];
     File    file;
+    File    fileHandlerForFooter;
     ParquetMetadata parquetMetadata;
     CompactProtocol *footerProtocol;
     int     rowGroupCount;
