@@ -6,6 +6,9 @@ PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(runtpch1);
 
+Datum *values;
+bool *nulls;
+
 static File DoOpenFile(char *filePath)
 {
     int fileFlags = O_RDONLY | PG_BINARY;
@@ -301,8 +304,6 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
      */
     scan->rowGroupReader.rowRead++;
 
-    Datum *values = palloc0(sizeof(lineitem_for_query1)*40);
-    bool *nulls = (bool *) palloc0(sizeof(bool) * scan->pqs_tupDesc->natts);
 
     int colReaderIndex = 0;
     for(int i = 0; i < scan->pqs_tupDesc->natts; i++)
@@ -364,20 +365,30 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
     read_tuples[total_tuples_num].l_extendedprice = DatumGetFloat8(values[5]);
     read_tuples[total_tuples_num].l_discount = DatumGetFloat8(values[6]);
     read_tuples[total_tuples_num].l_tax = DatumGetFloat8(values[7]);
+
+    /*
+     * More details can refer to printtup()
+     */
+    char    *tmp;
+    int     len;
+    char    *dptr = DatumGetPointer(values[8]);
+    tmp = VARDATA(dptr);
+    len = VARSIZE(dptr) - VARHDRSZ;
+    read_tuples[total_tuples_num].l_returnflag = tmp[0];
+
+    dptr = DatumGetPointer(values[9]);
+    tmp = VARDATA(dptr);
+    read_tuples[total_tuples_num].l_linestatus = tmp[0];
+
     /*
      * We should set the value of 'typoutput' and 'typisvarlena' through below way:
      * getTypeOutputInfo(scan->pqs_tupDesc->attrs[8]->atttypid, &typoutput, &typisvarlena);
      * But it need to scan the table: 'pg_type' each time. So we hard-code here to save time.
      */
-    Oid         typoutput = 1045;
-    bool        typisvarlena = false;
-    char *tmp = OidOutputFunctionCall(typoutput, values[8]);
-    read_tuples[total_tuples_num].l_returnflag = tmp[0];
-    tmp = OidOutputFunctionCall(typoutput, values[9]);
-    read_tuples[total_tuples_num].l_linestatus = tmp[0];
-    typoutput = 1085;
+    Oid     typoutput = 1085;
+    bool    typisvarlena = false;
     tmp = OidOutputFunctionCall(typoutput, values[10]);
-    strncpy(read_tuples[total_tuples_num].l_shipdate, tmp, 10);
+    memcpy(read_tuples[total_tuples_num].l_shipdate, tmp, 10);
 
 /*
     elog(NOTICE, "read_tuples[%d].l_quantity=%lf", total_tuples_num, read_tuples[total_tuples_num].l_quantity);
@@ -435,8 +446,11 @@ static void ReadDataFromLineitem()
     int64 eof[MAX_SEG_NUM];
 
     total_tuples_num = 0;
+    
     BeginScan(&scan);
     segNum = GetSegFileInfo(scan.rel->rd_id, segno, eof);
+    values = palloc0(sizeof(lineitem_for_query1)*40);
+    nulls = (bool *) palloc0(sizeof(bool) * scan.pqs_tupDesc->natts);
     for (int i = 0; i < segNum; i++) {
         ReadFileMetadata(&scan, segno[i], eof[i]);
         for (int j = 0 ; j < scan.segFile->rowGroupCount; j++) {
