@@ -54,9 +54,8 @@ struct DataItem {
    char key2;
 } DataItem;
 
-struct DataItem* hashArray[SIZE];
-struct DataItem* results[SIZE];
-struct DataItem* item;
+struct DataItem hashArray[SIZE];
+struct DataItem results[SIZE];
 
 typedef struct SegFile{
     char    filePath[1000];

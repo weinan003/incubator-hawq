@@ -453,50 +453,35 @@ int hashCode(char key1, char key2) {
 
 void insert(char key1, char key2, data_for_query1 data) {
 
-    struct DataItem *item = (struct DataItem*) malloc(sizeof(struct DataItem));
-    item->data = data;
-    item->key1 = key1;
-    item->key2 = key2;
-
     //get the hash
     int hashIndex = hashCode(key1, key2);
 
-    if (hashArray[hashIndex] != NULL && hashArray[hashIndex]->key1 != -1
-        && hashArray[hashIndex]->key2 != -1) {
-        // Calc sum(l_quantity)
-        hashArray[hashIndex]->data.sum_qty += data.lineitem_data.l_quantity;
-        // Calc sum(l_extendedprice)
-        hashArray[hashIndex]->data.sum_base_price += data.lineitem_data.l_extendedprice;
-        // Calc l_extendedprice * (1 - l_discount)
-        hashArray[hashIndex]->data.temp = data.lineitem_data.l_extendedprice * (1 - data.lineitem_data.l_discount);
-        hashArray[hashIndex]->data.sum_disc_price += hashArray[hashIndex]->data.temp;
-        // Calc l_extendedprice * (1 - l_discount) * (1 + l_tax)
-        hashArray[hashIndex]->data.sum_charge += hashArray[hashIndex]->data.temp * (1 + data.lineitem_data.l_tax);
-        // Calc sum(l_discount) (later will divide by count to make avg())
-        hashArray[hashIndex]->data.sum_discount += data.lineitem_data.l_discount;
-        // Calc count() within the group
-        hashArray[hashIndex]->data.count++;
-        //wrap around the table
-        //hashIndex %= SIZE;
-    }
-    else {
-        item->data.sum_qty = item->data.lineitem_data.l_quantity;
-        item->data.sum_base_price = item->data.lineitem_data.l_extendedprice;
-        item->data.temp = item->data.lineitem_data.l_extendedprice * (1 - item->data.lineitem_data.l_discount);
-        item->data.sum_disc_price = item->data.temp;
-        item->data.sum_charge = item->data.temp * (1 + item->data.lineitem_data.l_tax);
-        item->data.sum_discount = item->data.lineitem_data.l_discount;
-        item->data.count = 1;
-        hashArray[hashIndex] = item;
-    }
+    // Calc sum(l_quantity)
+    hashArray[hashIndex].key1 = key1;
+    hashArray[hashIndex].key2 = key2;
+    hashArray[hashIndex].data.lineitem_data = data.lineitem_data;
+
+    hashArray[hashIndex].data.sum_qty += data.lineitem_data.l_quantity;
+    // Calc sum(l_extendedprice)
+    hashArray[hashIndex].data.sum_base_price += data.lineitem_data.l_extendedprice;
+    // Calc l_extendedprice * (1 - l_discount)
+    hashArray[hashIndex].data.temp = data.lineitem_data.l_extendedprice * (1 - data.lineitem_data.l_discount);
+    hashArray[hashIndex].data.sum_disc_price += hashArray[hashIndex].data.temp;
+    // Calc l_extendedprice * (1 - l_discount) * (1 + l_tax)
+    hashArray[hashIndex].data.sum_charge += hashArray[hashIndex].data.temp * (1 + data.lineitem_data.l_tax);
+    // Calc sum(l_discount) (later will divide by count to make avg())
+    hashArray[hashIndex].data.sum_discount += data.lineitem_data.l_discount;
+    // Calc count() within the group
+    hashArray[hashIndex].data.count++;
 }
 
 void display() {
-    int i = 0;
-    result_num = 0;
 
+    int i = 0;
+
+    result_num = 0;
     for (i = 0; i < SIZE; i++) {
-        if (hashArray[i] != NULL) {
+        if (hashArray[i].key1 != 0 && hashArray[i].key2 != 0) {
             /*
             elog(NOTICE,"l_returnflag:%18c\n, l_linestatus:%18c\n , sum(l_quantity):%18lf\n , "
                     "sum(base_price):%18lf\n , sum(disc_price):%18lf\n , sum(charge):%18lf\n ,"
@@ -517,21 +502,37 @@ void display() {
             result_num ++;
         }
     }
-
 }
 
 
 void destroy_hashArray() {
+
     for (int i = 0; i < SIZE; i++) {
-        if (hashArray[i] != NULL) {
-            free(hashArray[i]);
-            hashArray[i] = NULL;
-        }
+        hashArray[i].key1 = 0;
+        hashArray[i].key2 = 0;
+        hashArray[i].data.sum_qty = 0;
+        hashArray[i].data.sum_base_price = 0;
+        hashArray[i].data.temp = 0;
+        hashArray[i].data.sum_disc_price = 0;
+        hashArray[i].data.sum_charge = 0;
+        hashArray[i].data.sum_discount = 0;
+        hashArray[i].data.count = 0;
+        hashArray[i].data.lineitem_data.l_quantity = 0;
+        hashArray[i].data.lineitem_data.l_extendedprice = 0;
+        hashArray[i].data.lineitem_data.l_discount = 0;
+        hashArray[i].data.lineitem_data.l_tax = 0;
+        hashArray[i].data.lineitem_data.l_returnflag = 0;
+        hashArray[i].data.lineitem_data.l_linestatus = 0;
+        memset(hashArray[i].data.lineitem_data.l_shipdate, 0, 11);
     }
+
 }
 
 static void tpch_query1() {
+
     struct DataItem entry;
+    entry.key1 = 0;
+    entry.key2 = 0;
     entry.data.sum_qty = 0;
     entry.data.sum_base_price = 0;
     entry.data.temp = 0;
@@ -544,6 +545,7 @@ static void tpch_query1() {
         entry.data.lineitem_data = read_tuples[i];
         // Insert into hash array.
         insert(read_tuples[i].l_returnflag, read_tuples[i].l_linestatus, entry.data);
+
     }
     display();
 }
@@ -610,25 +612,25 @@ Datum runtpch1(PG_FUNCTION_ARGS)
         args = funcctx->user_fctx;
 
         i = funcctx->call_cntr;
-        snprintf(buf, sizeof(buf), "%c", results[i]->data.lineitem_data.l_returnflag);
+        snprintf(buf, sizeof(buf), "%c", results[i].data.lineitem_data.l_returnflag);
         values[0] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%c", results[i]->data.lineitem_data.l_linestatus);
+        snprintf(buf, sizeof(buf), "%c", results[i].data.lineitem_data.l_linestatus);
         values[1] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_qty);
+        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_qty);
         values[2] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_base_price);
+        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_base_price);
         values[3] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_disc_price);
+        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_disc_price);
         values[4] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_charge);
+        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_charge);
         values[5] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_qty / results[i]->data.count);
+        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_qty / results[i].data.count);
         values[6] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_base_price / results[i]->data.count);
+        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_base_price / results[i].data.count);
         values[7] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i]->data.sum_discount / results[i]->data.count);
+        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_discount / results[i].data.count);
         values[8] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i]->data.count);
+        snprintf(buf, sizeof(buf), "%lf", results[i].data.count);
         values[9] = PointerGetDatum(cstring_to_text(buf));
         
         /* Build and return the tuple. */
@@ -638,6 +640,7 @@ Datum runtpch1(PG_FUNCTION_ARGS)
         SRF_RETURN_NEXT(funcctx, result);
     }
     else {
+        destroy_hashArray();
         SRF_RETURN_DONE(funcctx);
     }
 }

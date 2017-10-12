@@ -1,0 +1,14 @@
+hashArray[hashIndex]->data.lineitem_data = entry->data;
+        // Calc sum(l_quantity)
+        hashArray[hashIndex]->data.sum_qty += entry->data.l_quantity;
+        // Calc sum(l_extendedprice)
+        hashArray[hashIndex]->data.sum_base_price += entry->data.l_extendedprice;
+        // Calc l_extendedprice * (1 - l_discount)
+        hashArray[hashIndex]->data.temp = entry->data.l_extendedprice * (1 - entry->data.l_discount);
+        hashArray[hashIndex]->data.sum_disc_price += hashArray[hashIndex]->data.temp;
+        // Calc l_extendedprice * (1 - l_discount) * (1 + l_tax)
+        hashArray[hashIndex]->data.sum_charge += hashArray[hashIndex]->data.temp * (1 + entry->data.l_tax);
+        // Calc sum(l_discount) (later will divide by count to make avg())
+        hashArray[hashIndex]->data.sum_discount += entry->data.l_discount;
+        // Calc count() within the group
+        hashArray[hashIndex]->data.count++;
