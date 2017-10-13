@@ -8,7 +8,6 @@ PG_FUNCTION_INFO_V1(runtpch1);
 
 Datum *values;
 bool *nulls;
-double function_call_time;
 
 static File DoOpenFile(char *filePath)
 {
@@ -366,6 +365,7 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
     read_tuples[total_tuples_num].l_extendedprice = DatumGetFloat8(values[5]);
     read_tuples[total_tuples_num].l_discount = DatumGetFloat8(values[6]);
     read_tuples[total_tuples_num].l_tax = DatumGetFloat8(values[7]);
+    read_tuples[total_tuples_num].l_shipdate = DatumGetInt32(values[10]);
 
     /*
      * More details can refer to printtup()
@@ -380,20 +380,6 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
     dptr = DatumGetPointer(values[9]);
     tmp = VARDATA(dptr);
     read_tuples[total_tuples_num].l_linestatus = tmp[0];
-
-    /*
-     * We should set the value of 'typoutput' and 'typisvarlena' through below way:
-     * getTypeOutputInfo(scan->pqs_tupDesc->attrs[8]->atttypid, &typoutput, &typisvarlena);
-     * But it need to scan the table: 'pg_type' each time. So we hard-code here to save time.
-     */
-    Oid     typoutput = 1085;
-    bool    typisvarlena = false;
-    struct timeval t_begin, t_end;
-    gettimeofday(&t_begin, NULL);
-    tmp = OidOutputFunctionCall(typoutput, values[10]);
-    memcpy(read_tuples[total_tuples_num].l_shipdate, tmp, 10);
-    gettimeofday(&t_end, NULL);
-    function_call_time += (t_end.tv_sec - t_begin.tv_sec) * 1000000.0 + (t_end.tv_usec - t_begin.tv_usec);
 
 /*
     elog(NOTICE, "read_tuples[%d].l_quantity=%lf", total_tuples_num, read_tuples[total_tuples_num].l_quantity);
@@ -456,7 +442,6 @@ static void ReadDataFromLineitem()
     segNum = GetSegFileInfo(scan.rel->rd_id, segno, eof);
     values = palloc0(sizeof(lineitem_for_query1)*40);
     nulls = (bool *) palloc0(sizeof(bool) * scan.pqs_tupDesc->natts);
-    function_call_time = 0;
     for (int i = 0; i < segNum; i++) {
         ReadFileMetadata(&scan, segno[i], eof[i]);
         for (int j = 0 ; j < scan.segFile->rowGroupCount; j++) {
@@ -464,7 +449,6 @@ static void ReadDataFromLineitem()
             ReadTuplesFromRowGroup(&scan);
         }
     }
-    elog(NOTICE, "function_call_time = %lf ms", function_call_time/1000.0);
     EndScan(&scan);
 }
 
@@ -544,7 +528,7 @@ void destroy_hashArray() {
         hashArray[i].data.lineitem_data.l_tax = 0;
         hashArray[i].data.lineitem_data.l_returnflag = 0;
         hashArray[i].data.lineitem_data.l_linestatus = 0;
-        memset(hashArray[i].data.lineitem_data.l_shipdate, 0, 11);
+        hashArray[i].data.lineitem_data.l_shipdate = 0;
     }
 
 }
@@ -633,25 +617,25 @@ Datum runtpch1(PG_FUNCTION_ARGS)
         args = funcctx->user_fctx;
 
         i = funcctx->call_cntr;
-        snprintf(buf, sizeof(buf), "%c", results[i].data.lineitem_data.l_returnflag);
+        snprintf(buf, sizeof(buf), " %8c ", results[i].data.lineitem_data.l_returnflag);
         values[0] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%c", results[i].data.lineitem_data.l_linestatus);
+        snprintf(buf, sizeof(buf), " %8c ", results[i].data.lineitem_data.l_linestatus);
         values[1] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_qty);
+        snprintf(buf, sizeof(buf), " %8.0lf ", results[i].data.sum_qty);
         values[2] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_base_price);
+        snprintf(buf, sizeof(buf), " %16lf ", results[i].data.sum_base_price);
         values[3] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_disc_price);
+        snprintf(buf, sizeof(buf), " %16lf ", results[i].data.sum_disc_price);
         values[4] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_charge);
+        snprintf(buf, sizeof(buf), " %16lf ", results[i].data.sum_charge);
         values[5] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_qty / results[i].data.count);
+        snprintf(buf, sizeof(buf), " %16lf ", results[i].data.sum_qty / results[i].data.count);
         values[6] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_base_price / results[i].data.count);
+        snprintf(buf, sizeof(buf), " %16lf ", results[i].data.sum_base_price / results[i].data.count);
         values[7] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i].data.sum_discount / results[i].data.count);
+        snprintf(buf, sizeof(buf), " %16lf ", results[i].data.sum_discount / results[i].data.count);
         values[8] = PointerGetDatum(cstring_to_text(buf));
-        snprintf(buf, sizeof(buf), "%lf", results[i].data.count);
+        snprintf(buf, sizeof(buf), " %16.0lf ", results[i].data.count);
         values[9] = PointerGetDatum(cstring_to_text(buf));
         
         /* Build and return the tuple. */

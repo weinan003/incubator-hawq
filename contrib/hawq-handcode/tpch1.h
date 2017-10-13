@@ -32,7 +32,7 @@ typedef struct lineitem_for_query1{
     double  l_tax;
     char    l_returnflag;
     char    l_linestatus;
-    char    l_shipdate[11];
+    int32   l_shipdate;
 } lineitem_for_query1;
 
 lineitem_for_query1 read_tuples[MAX_TUPLE_NUM];
