@@ -8,6 +8,7 @@ PG_FUNCTION_INFO_V1(runtpch1);
 
 Datum *values;
 bool *nulls;
+double function_call_time;
 
 static File DoOpenFile(char *filePath)
 {
@@ -387,8 +388,12 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
      */
     Oid     typoutput = 1085;
     bool    typisvarlena = false;
+    struct timeval t_begin, t_end;
+    gettimeofday(&t_begin, NULL);
     tmp = OidOutputFunctionCall(typoutput, values[10]);
     memcpy(read_tuples[total_tuples_num].l_shipdate, tmp, 10);
+    gettimeofday(&t_end, NULL);
+    function_call_time += (t_end.tv_sec - t_begin.tv_sec) * 1000000.0 + (t_end.tv_usec - t_begin.tv_usec);
 
 /*
     elog(NOTICE, "read_tuples[%d].l_quantity=%lf", total_tuples_num, read_tuples[total_tuples_num].l_quantity);
@@ -451,6 +456,7 @@ static void ReadDataFromLineitem()
     segNum = GetSegFileInfo(scan.rel->rd_id, segno, eof);
     values = palloc0(sizeof(lineitem_for_query1)*40);
     nulls = (bool *) palloc0(sizeof(bool) * scan.pqs_tupDesc->natts);
+    function_call_time = 0;
     for (int i = 0; i < segNum; i++) {
         ReadFileMetadata(&scan, segno[i], eof[i]);
         for (int j = 0 ; j < scan.segFile->rowGroupCount; j++) {
@@ -458,6 +464,7 @@ static void ReadDataFromLineitem()
             ReadTuplesFromRowGroup(&scan);
         }
     }
+    elog(NOTICE, "function_call_time = %lf ms", function_call_time/1000.0);
     EndScan(&scan);
 }
 

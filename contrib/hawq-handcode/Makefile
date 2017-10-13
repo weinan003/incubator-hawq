@@ -1,7 +1,7 @@
 MODULE_big = tpch1
 OBJS    = rm.o tpch1.o
 
-PG_CXXFLAGS = -Wall -O0 -g -std=c++11
+PG_CXXFLAGS = -Wall -g -std=c++11
 PG_CPPFLAGS = -I$(libpq_srcdir) -I/Users/chwang/Code/incubator-hawq/src/include/resourcemanager
 PG_LIBS = $(libpq_pgport) 
 
