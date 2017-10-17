@@ -6,9 +6,6 @@ PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(runtpch1);
 
-Datum *values;
-bool *nulls;
-
 static File DoOpenFile(char *filePath)
 {
     int fileFlags = O_RDONLY | PG_BINARY;
@@ -17,6 +14,44 @@ static File DoOpenFile(char *filePath)
     file = PathNameOpenFile(filePath, fileFlags, fileMode);
     
     return file;
+}
+
+static int GetSegFileInfo(ParquetFormatScan *scan)
+{
+    char    sql[BUFFER_SIZE] = {'\0'};
+    int     cnt;
+    int     ret;
+    int     proc;
+
+    snprintf(sql, sizeof(sql), "SELECT * FROM pg_aoseg.pg_paqseg_%d", scan->rel->rd_id);
+   
+    SPI_connect();
+    ret = SPI_exec(sql, 0);
+    proc = SPI_processed;
+    if (ret > 0 && SPI_tuptable != NULL) {
+        TupleDesc tupdesc = SPI_tuptable->tupdesc;
+        char    buf[BUFFER_SIZE];
+        int     i, j;
+        
+        /* 
+         * Can not use palloc/palloc0 here, which will use memory context of SPI 
+         * and will be free after SPI_finish()
+         */
+        scan->segno = (int *) malloc(proc * sizeof(int));
+        scan->eof = (int64 *) malloc(proc * sizeof(int64));
+ 
+        for (i = 0; i < proc; i++) {
+            HeapTuple aosegTuple = SPI_tuptable->vals[i];
+            Form_pg_aoseg pa;
+            pa = (Form_pg_aoseg) GETSTRUCT(aosegTuple);
+            scan->segno[i] = pa->segno;
+            scan->eof[i] = (int64) pa->eof;
+            elog(NOTICE, "segno[%d]=%d, eof[%d]=%ld", i, scan->segno[i], i, scan->eof[i]);
+        }
+    }
+    SPI_finish();
+
+    return proc;
 }
 
 static void BeginScan(ParquetFormatScan *scan)
@@ -34,55 +69,32 @@ static void BeginScan(ParquetFormatScan *scan)
     relid = RelnameGetRelid(relname);
     scan->rel = heap_open(relid, AccessShareLock);
     scan->pqs_tupDesc = RelationGetDescr(scan->rel);
+    scan->segFileCount = GetSegFileInfo(scan);
+    scan->segFileProcessedCount = 0;
     scan->hawqAttrToParquetColChunks = (int*)palloc0(scan->pqs_tupDesc->natts * sizeof(int));
     scan->rowGroupReader.columnReaderCount = 0;
+    scan->slot = (TupleTableSlot *) palloc (sizeof(TupleTableSlot));
+    scan->slot->tts_mt_bind = create_memtuple_binding(scan->pqs_tupDesc);
+    scan->slot->PRIVATE_tts_values = (Datum *) palloc(scan->pqs_tupDesc->natts * sizeof(Datum));
+    scan->slot->PRIVATE_tts_isnull = (bool *) palloc(scan->pqs_tupDesc->natts * sizeof(bool));
+    scan->readTuplesNum = 0;
 }
 
-static int GetSegFileInfo(int relid, int *segno, int64 *eof)
-{
-    char    sql[BUFFER_SIZE] = {'\0'};
-    int     cnt;
-    int     ret;
-    int     proc;
-
-    snprintf(sql, sizeof(sql), "SELECT * FROM pg_aoseg.pg_paqseg_%d", relid);
-   
-    SPI_connect();
-    ret = SPI_exec(sql, 0);
-    proc = SPI_processed;
-    if (ret > 0 && SPI_tuptable != NULL) {
-        TupleDesc tupdesc = SPI_tuptable->tupdesc;
-        char    buf[BUFFER_SIZE];
-        int     i, j;
-        
-        for (i = 0; i < proc; i++) {
-            HeapTuple aosegTuple = SPI_tuptable->vals[i];
-            Form_pg_aoseg pa;
-            pa = (Form_pg_aoseg) GETSTRUCT(aosegTuple);
-            segno[i] = pa->segno;
-            eof[i] = (int64) pa->eof;
-            elog(NOTICE, "segno[%d]=%d, eof[%d]=%ld", i, segno[i], i, eof[i]);
-        }
-    }
-    SPI_finish();
-
-    return proc;
-}
-
-static void ReadFileMetadata(ParquetFormatScan *scan, int segno, int64 eof)
+static void ReadFileMetadata(ParquetFormatScan *scan)
 {
     int32   fileSegNo;
 
     scan->segFile = (SegFile *) palloc0(sizeof(SegFile));
-    MakeAOSegmentFileName(scan->rel, segno, -1, &fileSegNo, scan->segFile->filePath);
+    MakeAOSegmentFileName(scan->rel, scan->segno[scan->segFileProcessedCount], -1, &fileSegNo, scan->segFile->filePath);
     scan->segFile->file = DoOpenFile(scan->segFile->filePath);
     scan->segFile->fileHandlerForFooter = DoOpenFile(scan->segFile->filePath);
     readParquetFooter(scan->segFile->fileHandlerForFooter, &(scan->segFile->parquetMetadata),
-            &(scan->segFile->footerProtocol), eof, scan->segFile->filePath);
+            &(scan->segFile->footerProtocol), scan->eof[scan->segFileProcessedCount], scan->segFile->filePath);
     ValidateParquetSegmentFile(scan->pqs_tupDesc, scan->hawqAttrToParquetColChunks,
-            scan->segFile->parquetMetadata);
+    		scan->segFile->parquetMetadata);
     scan->segFile->rowGroupCount = scan->segFile->parquetMetadata->blockCount;
     scan->segFile->rowGroupProcessedCount = 0;
+    scan->segFileProcessedCount ++;
     elog(NOTICE, "%s, file=%d, fileHandlerForFooter=%d", scan->segFile->filePath, scan->segFile->file, scan->segFile->fileHandlerForFooter);
 }
 
@@ -291,22 +303,19 @@ static void ReadRowGroupData(ParquetFormatScan *scan)
     scan->segFile->rowGroupProcessedCount++;
 }
 
-static void ReadNextRowGroup(ParquetFormatScan *scan)
-{
-    ReadRowGroupInfo(scan);
-    ReadRowGroupData(scan);
-}
-
-static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
+static void ReadTupleSlotFromRowGroup(ParquetRowGroupReader *rowGroupReader, TupleTableSlot *slot,
+		TupleDesc pqs_tupDesc, int *hawqAttrToParquetColChunks)
 {
     /*
      * get the next item (tuple) from the row group
      */
-    scan->rowGroupReader.rowRead++;
+    rowGroupReader->rowRead++;
 
+    Datum *values = slot_get_values(slot);
+    bool *nulls = slot_get_isnull(slot);
 
     int colReaderIndex = 0;
-    for(int i = 0; i < scan->pqs_tupDesc->natts; i++)
+    for(int i = 0; i < pqs_tupDesc->natts; i++)
     {
         if(projs[i] == false)
         {
@@ -315,10 +324,10 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
         }
 
         ParquetColumnReader *nextReader =
-            &scan->rowGroupReader.columnReaders[colReaderIndex];
-        int hawqTypeID = scan->pqs_tupDesc->attrs[i]->atttypid;
+            &rowGroupReader->columnReaders[colReaderIndex];
+        int hawqTypeID = pqs_tupDesc->attrs[i]->atttypid;
 
-        if(scan->hawqAttrToParquetColChunks[i] == 1)
+        if(hawqAttrToParquetColChunks[i] == 1)
         {
             ParquetColumnReader_readValue(nextReader, &values[i], &nulls[i], hawqTypeID);
         }
@@ -355,17 +364,32 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
                     break;
             }
         }
-        colReaderIndex += scan->hawqAttrToParquetColChunks[i];
+        colReaderIndex += hawqAttrToParquetColChunks[i];
     }
+
+/*
+    elog(NOTICE, "readTuples[%d].l_quantity=%lf", total_tuples_num, readTuples[total_tuples_num].l_quantity);
+    elog(NOTICE, "readTuples[%d].l_extendedprice=%lf", total_tuples_num, readTuples[total_tuples_num].l_extendedprice);
+    elog(NOTICE, "readTuples[%d].l_discount=%lf", total_tuples_num, readTuples[total_tuples_num].l_discount);
+    elog(NOTICE, "readTuples[%d].l_tax=%lf", total_tuples_num, readTuples[total_tuples_num].l_tax);
+    elog(NOTICE, "readTuples[%d].l_returnflag=%c", total_tuples_num, readTuples[total_tuples_num].l_returnflag);
+    elog(NOTICE, "readTuples[%d].l_linestatus=%c", total_tuples_num, readTuples[total_tuples_num].l_linestatus);
+    elog(NOTICE, "readTuples[%d].l_shipdate=%s", total_tuples_num, readTuples[total_tuples_num].l_shipdate);
+*/
+}
+
+static void GetTupleValueFromSlot(TupleTableSlot *slot, Lineitem4Query1 *readTuple)
+{
+    Datum *values = slot_get_values(slot);
+    bool *nulls = slot_get_isnull(slot);
 
     /*
      * construct a row tuple
      */
-    read_tuples[total_tuples_num].l_quantity = DatumGetFloat8(values[4]);
-    read_tuples[total_tuples_num].l_extendedprice = DatumGetFloat8(values[5]);
-    read_tuples[total_tuples_num].l_discount = DatumGetFloat8(values[6]);
-    read_tuples[total_tuples_num].l_tax = DatumGetFloat8(values[7]);
-    read_tuples[total_tuples_num].l_shipdate = DatumGetInt32(values[10]);
+    readTuple->l_quantity = DatumGetFloat8(values[4]);
+    readTuple->l_extendedprice = DatumGetFloat8(values[5]);
+    readTuple->l_discount = DatumGetFloat8(values[6]);
+    readTuple->l_tax = DatumGetFloat8(values[7]);
 
     /*
      * More details can refer to printtup()
@@ -375,31 +399,29 @@ static void ReadTupleFromRowGroup(ParquetFormatScan *scan)
     char    *dptr = DatumGetPointer(values[8]);
     tmp = VARDATA(dptr);
     len = VARSIZE(dptr) - VARHDRSZ;
-    read_tuples[total_tuples_num].l_returnflag = tmp[0];
+    readTuple->l_returnflag = tmp[0];
 
     dptr = DatumGetPointer(values[9]);
     tmp = VARDATA(dptr);
-    read_tuples[total_tuples_num].l_linestatus = tmp[0];
-
-/*
-    elog(NOTICE, "read_tuples[%d].l_quantity=%lf", total_tuples_num, read_tuples[total_tuples_num].l_quantity);
-    elog(NOTICE, "read_tuples[%d].l_extendedprice=%lf", total_tuples_num, read_tuples[total_tuples_num].l_extendedprice);
-    elog(NOTICE, "read_tuples[%d].l_discount=%lf", total_tuples_num, read_tuples[total_tuples_num].l_discount);
-    elog(NOTICE, "read_tuples[%d].l_tax=%lf", total_tuples_num, read_tuples[total_tuples_num].l_tax);
-    elog(NOTICE, "read_tuples[%d].l_returnflag=%c", total_tuples_num, read_tuples[total_tuples_num].l_returnflag);
-    elog(NOTICE, "read_tuples[%d].l_linestatus=%c", total_tuples_num, read_tuples[total_tuples_num].l_linestatus);
-    elog(NOTICE, "read_tuples[%d].l_shipdate=%s", total_tuples_num, read_tuples[total_tuples_num].l_shipdate);
-*/
-
-    total_tuples_num ++;
+    readTuple->l_linestatus = tmp[0];
 }
 
 static void ReadTuplesFromRowGroup(ParquetFormatScan *scan)
 {
-    while (scan->rowGroupReader.rowRead < scan->rowGroupReader.rowCount){
-        ReadTupleFromRowGroup(scan);   
+    if (scan->readTuplesNum == 0) {
+        scan->readTuples = (Lineitem4Query1 *) malloc (MAX_TUPLE_NUM * sizeof(Lineitem4Query1));
     }
-    
+    scan->readTuplesNum = 0;
+    while (scan->rowGroupReader.rowRead < scan->rowGroupReader.rowCount){
+        ReadTupleSlotFromRowGroup(&scan->rowGroupReader, scan->slot, scan->pqs_tupDesc, scan->hawqAttrToParquetColChunks);
+        Datum *values = slot_get_values(scan->slot);
+        int l_shipdate = DatumGetInt32(values[10]);
+        /* Do Query1 filter, l_shipdate <= '1998-09-16' */
+        if (l_shipdate > -472)
+            continue;
+        GetTupleValueFromSlot(scan->slot, &scan->readTuples[scan->rowGroupReader.rowRead]);
+        scan->readTuplesNum ++;
+    }
     ParquetRowGroupReader_FinishedScanRowGroup(&scan->rowGroupReader);
 }
 
@@ -420,43 +442,38 @@ static void FinishReadSegFile(ParquetFormatScan *scan)
         freeParquetMetadata(scan->segFile->parquetMetadata);
         scan->segFile->parquetMetadata = NULL;
     }
-    free(scan->segFile);
+    //free(scan->segFile);
+}
+
+static bool ReadNewRowGroup(ParquetFormatScan *scan)
+{
+    if (scan->segFile->rowGroupProcessedCount >= scan->segFile->rowGroupCount) {
+        FinishReadSegFile(scan);
+        if (scan->segFileProcessedCount < scan->segFileCount) {
+        	    ReadFileMetadata(scan);
+        } else {
+            return false;
+        }
+    }
+    ReadRowGroupInfo(scan);
+    ReadRowGroupData(scan);
+    ReadTuplesFromRowGroup(scan);
+
+    return true;
 }
 
 static void EndScan(ParquetFormatScan *scan)
 {
     //free(scan->hawqAttrToParquetColChunks);
+    ExecClearTuple(scan->slot);
     heap_close(scan->rel, AccessShareLock);
-}
-
-static void ReadDataFromLineitem()
-{
-    ParquetFormatScan scan;
-    int segNum;
-    int segno[MAX_SEG_NUM];
-    int64 eof[MAX_SEG_NUM];
-
-    total_tuples_num = 0;
-    
-    BeginScan(&scan);
-    segNum = GetSegFileInfo(scan.rel->rd_id, segno, eof);
-    values = palloc0(sizeof(lineitem_for_query1)*40);
-    nulls = (bool *) palloc0(sizeof(bool) * scan.pqs_tupDesc->natts);
-    for (int i = 0; i < segNum; i++) {
-        ReadFileMetadata(&scan, segno[i], eof[i]);
-        for (int j = 0 ; j < scan.segFile->rowGroupCount; j++) {
-            ReadNextRowGroup(&scan);
-            ReadTuplesFromRowGroup(&scan);
-        }
-    }
-    EndScan(&scan);
 }
 
 int hashCode(char key1, char key2) {
     return key1 * 256 + key2;
 }
 
-void insert(char key1, char key2, data_for_query1 data) {
+void insert(char key1, char key2, Data4Query1 data) {
 
     //get the hash
     int hashIndex = hashCode(key1, key2);
@@ -480,29 +497,13 @@ void insert(char key1, char key2, data_for_query1 data) {
     hashArray[hashIndex].data.count++;
 }
 
-void display() {
+static void DoQuery1Gather() {
 
     int i = 0;
 
     result_num = 0;
     for (i = 0; i < SIZE; i++) {
         if (hashArray[i].key1 != 0 && hashArray[i].key2 != 0) {
-            /*
-            elog(NOTICE,"l_returnflag:%18c\n, l_linestatus:%18c\n , sum(l_quantity):%18lf\n , "
-                    "sum(base_price):%18lf\n , sum(disc_price):%18lf\n , sum(charge):%18lf\n ,"
-                    "avg(l_quantity):%18lf\n , avg(base_price):%18lf\n , avg(discount):%18lf\n , "
-                    "count_order:%18lf \n",
-                    hashArray[i]->data.lineitem_data.l_returnflag,
-                    hashArray[i]->data.lineitem_data.l_linestatus,
-                    hashArray[i]->data.sum_qty,
-                    hashArray[i]->data.sum_base_price,
-                    hashArray[i]->data.sum_disc_price,
-                    hashArray[i]->data.sum_charge,
-                    hashArray[i]->data.sum_qty / hashArray[i]->data.count,
-                    hashArray[i]->data.sum_base_price / hashArray[i]->data.count,
-                    hashArray[i]->data.sum_discount / hashArray[i]->data.count,
-                    hashArray[i]->data.count);
-            */
             results[result_num] = hashArray[i];
             result_num ++;
         }
@@ -533,26 +534,39 @@ void destroy_hashArray() {
 
 }
 
-static void tpch_query1() {
+static void DoQuery1Aggregate()
+{
+    ParquetFormatScan scan;
+    BeginScan(&scan);
+    
+    ReadFileMetadata(&scan);
+    while (ReadNewRowGroup(&scan)) {
+        struct DataItem entry;
+        entry.key1 = 0;
+        entry.key2 = 0;
+        entry.data.sum_qty = 0;
+        entry.data.sum_base_price = 0;
+        entry.data.temp = 0;
+        entry.data.sum_disc_price = 0;
+        entry.data.sum_charge = 0;
+        entry.data.sum_discount = 0;
+        entry.data.count = 0;
 
-    struct DataItem entry;
-    entry.key1 = 0;
-    entry.key2 = 0;
-    entry.data.sum_qty = 0;
-    entry.data.sum_base_price = 0;
-    entry.data.temp = 0;
-    entry.data.sum_disc_price = 0;
-    entry.data.sum_charge = 0;
-    entry.data.sum_discount = 0;
-    entry.data.count = 0;
-
-    for (int i = 0; i < total_tuples_num; i++) {
-        entry.data.lineitem_data = read_tuples[i];
-        // Insert into hash array.
-        insert(read_tuples[i].l_returnflag, read_tuples[i].l_linestatus, entry.data);
-
+        for (int i = 0; i < scan.readTuplesNum; i++) {
+            entry.data.lineitem_data = scan.readTuples[i];
+            // Insert into hash array.
+            insert(scan.readTuples[i].l_returnflag, scan.readTuples[i].l_linestatus, entry.data);
+        }
     }
-    display();
+
+    EndScan(&scan);
+    free(scan.readTuples);
+}
+
+static void DoTPCHQuery1()
+{
+    DoQuery1Aggregate();
+    DoQuery1Gather();
 }
 
 Datum runtpch1(PG_FUNCTION_ARGS)
@@ -561,7 +575,7 @@ Datum runtpch1(PG_FUNCTION_ARGS)
     Datum            result;
     MemoryContext    oldcontext = NULL;
     HeapTuple        tuple      = NULL;
-    lineitem_for_query1	*args;
+    Lineitem4Query1	*args;
 
     if (SRF_IS_FIRSTCALL())
     {
@@ -571,7 +585,7 @@ Datum runtpch1(PG_FUNCTION_ARGS)
         /* Switch context when allocating stuff to be used in later calls */
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-        args = palloc0(sizeof(struct lineitem_for_query1));
+        args = palloc0(sizeof(struct Lineitem4Query1));
         funcctx->user_fctx = args;
 
         TupleDesc tupledesc = CreateTemplateTupleDesc(
@@ -590,9 +604,7 @@ Datum runtpch1(PG_FUNCTION_ARGS)
 
         funcctx->tuple_desc = BlessTupleDesc(tupledesc);
 
-        ReadDataFromLineitem();
-
-		tpch_query1();
+        DoTPCHQuery1();
 
         funcctx->max_calls = result_num;
 

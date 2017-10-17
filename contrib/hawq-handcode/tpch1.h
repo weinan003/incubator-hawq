@@ -21,11 +21,11 @@
 #define BUFFER_SIZE 1024
 #define TMP_COLUMNS 10
 #define relname "lineitem"
-#define MAX_TUPLE_NUM 10000000
+#define MAX_TUPLE_NUM 1000000
 #define MAX_SEG_NUM 100000
 #define SIZE 256 * 256
 
-typedef struct lineitem_for_query1{
+typedef struct Lineitem4Query1{
     double  l_quantity;
     double  l_extendedprice;
     double  l_discount;
@@ -33,12 +33,10 @@ typedef struct lineitem_for_query1{
     char    l_returnflag;
     char    l_linestatus;
     int32   l_shipdate;
-} lineitem_for_query1;
+} Lineitem4Query1;
 
-lineitem_for_query1 read_tuples[MAX_TUPLE_NUM];
-
-typedef struct data_for_query1{
-    lineitem_for_query1 lineitem_data;
+typedef struct Data4Query1{
+    Lineitem4Query1 lineitem_data;
     double sum_qty;
     double sum_base_price;
     double temp;
@@ -46,10 +44,10 @@ typedef struct data_for_query1{
     double sum_charge;
     double sum_discount;
     double count;
-} data_for_query1;
+} Data4Query1;
 
 struct DataItem {
-   data_for_query1 data;
+   Data4Query1 data;
    char key1;
    char key2;
 } DataItem;
@@ -69,10 +67,17 @@ typedef struct SegFile{
 
 typedef struct ParquetFormatScan{
     Relation    rel;
-    SegFile    *segFile;
+    SegFile     *segFile;
+    int         *segno;
+    int64       *eof;
+    int         segFileCount;
+    int         segFileProcessedCount;
     TupleDesc   pqs_tupDesc;
     int         *hawqAttrToParquetColChunks;
     ParquetRowGroupReader   rowGroupReader;
+    TupleTableSlot          *slot;
+    Lineitem4Query1         *readTuples;
+    int         readTuplesNum;
 } ParquetFormatScan;
 
 typedef struct FormData_pg_aoseg{
