@@ -41,6 +41,10 @@
 
 #include "cdb/cdbdef.h"                 /* CdbVisitOpt */
 
+/* Hook for plugins to get control executor */
+typedef TupleTableSlot *(*exec_agg_hook_type) (AggState *node);
+extern PGDLLIMPORT exec_agg_hook_type exec_agg_hook;
+
 struct ChunkTransportState;             /* #include "cdb/cdbinterconnect.h" */
 
 /*

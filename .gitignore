@@ -66,3 +66,8 @@ autom4te.cache/
 *.gcda
 *.gcno
 CodeCoverage*
+
+cscope*
+GRTAGS
+GTAGS
+GPATH

@@ -152,6 +152,9 @@
 static void ExecCdbTraceNode(PlanState *node, bool entry, TupleTableSlot *result);
 #endif   /* CDB_TRACE_EXECUTOR */
 
+exec_agg_hook_type exec_agg_hook = NULL;
+
+
  /* flags bits for planstate walker */
  #define PSW_IGNORE_INITPLAN	0x01
 
@@ -797,7 +800,31 @@ ExecSliceDependencyNode(PlanState *node)
 	ExecSliceDependencyNode(outerPlanState(node));
 	ExecSliceDependencyNode(innerPlanState(node));
 }
-    
+   
+static bool isValidVectorizedPlan(PlanState *node)
+{
+	if (!vectorized_executor_enable)
+	{
+		return false;
+	}
+
+	if (nodeTag(node) != T_AggState)
+	{
+		return false;
+	} 
+	PlanState *outerPlan = outerPlanState(node);
+	if (nodeTag(outerPlan) != T_TableScanState)
+	{
+		return false;
+	}
+	TableScanState *ts = (TableScanState *)outerPlan;
+	if (ts->ss.tableType != TableTypeParquet) 
+	{
+		return false;
+	}
+	return true;
+}
+ 
 /* ----------------------------------------------------------------
  *		ExecProcNode
  *
@@ -976,7 +1003,11 @@ Exec_Jmp_Sort:
 	goto Exec_Jmp_Done;
 
 Exec_Jmp_Agg:
-	result = ExecAgg((AggState *) node);
+	if (NULL != exec_agg_hook && isValidVectorizedPlan(node)) {
+		result = (*exec_agg_hook)((AggState *) node);
+	} else {
+		result = ExecAgg((AggState *) node);
+	}
 	goto Exec_Jmp_Done;
 
 Exec_Jmp_Unique:

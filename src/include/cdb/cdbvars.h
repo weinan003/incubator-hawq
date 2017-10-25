@@ -1121,6 +1121,10 @@ extern bool prefer_datalocality_to_iobalance;
 extern bool balance_on_partition_table_level;
 extern bool balance_on_whole_query_level;
 extern int metadata_cache_block_capacity;
+
+/* vectorized executor GUCs */
+extern bool vectorized_executor_enable;
+
 /* The 5 gucs below related to metadatacache_test.*/
 extern int metadata_cache_check_interval;
 extern int metadata_cache_refresh_interval;
