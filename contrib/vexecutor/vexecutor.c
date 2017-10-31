@@ -1,5 +1,10 @@
 #include "vexecutor.h"
 #include "parquet_reader.h"
+#include "debug.h"
+#include "tuple_batch.h"
+#include "catalog/namespace.h"
+#include "utils/lsyscache.h"
+#include "utils/builtins.h"
 
 PG_MODULE_MAGIC;
 
@@ -20,11 +25,24 @@ static void initialize_vaggregates(AggState *aggstate,
 									AggStatePerAgg peragg,
 									AggStatePerGroup pergroup,
 									MemoryManagerContainer *mem_manager);
+
 static void advance_vaggregates(AggState *aggstate, 
 									AggStatePerGroup pergroup,
 									MemoryManagerContainer *mem_manager);
-static void finalize_vaggregates(AggState *aggstate, AggStatePerGroup pergroup);
+static void advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
+									AggStatePerGroup pergroupstate, 
+									FunctionCallInfoData *fcinfo,
+									const char *funcName);
 
+static void finalize_vaggregates(AggState *aggstate, AggStatePerGroup pergroup);
+static void finalize_vaggregate(AggState *aggstate,
+									AggStatePerAgg peraggstate,
+									AggStatePerGroup pergroupstate,
+									Datum *resultVal, 
+									bool *resultIsNull);
+	
+static Datum int4_sum_vec_internal(TupleColumnData *columnData, int nrow);
+static Datum int8inc_any_vec_internal(TupleColumnData *columnData, int nrow);
 
 /*
  * _PG_init is called when the module is loaded. In this function we save the
@@ -121,8 +139,8 @@ vagg_retrieve_scalar(AggState *aggstate)
 		//Gpmon_M_Incr(GpmonPktFromAggState(aggstate), GPMON_QEXEC_M_ROWSIN);
 		//CheckSendPlanStateGpmonPkt(&aggstate->ss.ps);
 
-		elog(LOG, "print tuple for debugging");
-		print_slot(outerslot);
+		//print_slot(outerslot);
+		//dumpTupleBatch(outerslot);
 
 		tmpcontext->ecxt_scantuple = outerslot;
 		advance_vaggregates(aggstate, pergroup, &(aggstate->mem_manager));
@@ -162,7 +180,33 @@ initialize_vaggregates(AggState *aggstate,
                       AggStatePerGroup pergroup,
                       MemoryManagerContainer *mem_manager)
 {
+	int aggno;
 
+	for (aggno = 0; aggno < aggstate->numaggs; aggno++)
+	{
+		AggStatePerAgg peraggstate = &peragg[aggno];
+		AggStatePerGroup pergroupstate = &pergroup[aggno];
+
+		if (peraggstate->numSortCols > 0)
+		{
+			// TODO
+		}
+
+		if (peraggstate->initValueIsNull)
+		{
+			pergroupstate->transValue = peraggstate->initValue;
+		}
+		else
+		{
+			pergroupstate->transValue = datumCopyWithMemManager(0,
+										peraggstate->initValue,
+										peraggstate->transtypeByVal,
+										peraggstate->transtypeLen,
+										mem_manager);
+		}
+		pergroupstate->transValueIsNull = peraggstate->initValueIsNull;
+		pergroupstate->noTransValue = peraggstate->initValueIsNull;
+	}
 }
 
 /*
@@ -177,6 +221,124 @@ void
 advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
                    MemoryManagerContainer *mem_manager)
 {
+	int			aggno;
+	ExprContext *tmpcontext = aggstate->tmpcontext;
+	TupleTableSlot *scantuple = tmpcontext->ecxt_scantuple;
+	if (scantuple == NULL || scantuple->PRIVATE_tts_data == NULL)
+	{
+		elog(ERROR, "no tuple batch during advance_vaggregates");	
+	}
+
+	TupleBatch tb = (TupleBatch)scantuple->PRIVATE_tts_data;
+
+	for (aggno = 0; aggno < aggstate->numaggs; aggno++)
+	{
+		Datum value;
+		bool isnull;
+		AggStatePerAgg peraggstate = &aggstate->peragg[aggno];
+		AggStatePerGroup pergroupstate = &pergroup[aggno];
+		int32 argumentCount = peraggstate->numArguments + 1;
+		//Aggref	   *aggref = peraggstate->aggref;
+		//PercentileExpr *perc = peraggstate->perc;
+		//int			i;
+		//TupleTableSlot *slot;
+		//int nargs;
+        char *transitionFuncName = NULL;
+        char vectorTransitionFuncName[NAMEDATALEN];
+        List *qualVectorTransitionFuncName = NIL;
+        FuncCandidateList vectorTransitionFuncList = NULL;
+        FunctionCallInfoData fcinfo;
+
+		TupleColumnData *columnData = NULL; 
+        
+		/* simple check to handle count(*) */
+/*
+        int simpleColumnCount =  peraggstate->evalproj->pi_numSimpleVars;
+        if (simpleColumnCount >= 1)
+        {
+            int columnIndex = peraggstate->evalproj->pi_varNumbers[0]-1;
+            columnData = tb->columnDataArray[columnIndex];
+        }
+*/
+        columnData = tb->columnDataArray[0];
+        
+
+		/*
+         * If the user typed sum(), count(), or avg() instead of the vectorized
+         * aggregate names, manually map to the vectorized version here. This is
+         * merely syntactic sugar. Note that we rely on a naming convention here,
+         * where vectorized function names are regular function names with _vec
+         * appended to them.
+         */
+        transitionFuncName = get_func_name(peraggstate->transfn_oid);
+        snprintf(vectorTransitionFuncName, NAMEDATALEN, "%s_vec", transitionFuncName);
+
+        qualVectorTransitionFuncName =
+            stringToQualifiedNameList(vectorTransitionFuncName, "");
+        vectorTransitionFuncList = FuncnameGetCandidates(qualVectorTransitionFuncName, argumentCount);
+
+        Oid functionOid = 0;
+        if (vectorTransitionFuncList != NULL)
+        {
+            functionOid = vectorTransitionFuncList->oid;
+            fmgr_info(functionOid, &peraggstate->transfn);
+        }
+/*
+		elog(LOG, "transitionFuncName:%s vectorTransitionFuncName:%s functionOid:%d",
+						transitionFuncName,
+						vectorTransitionFuncName,
+						functionOid);
+*/
+        fcinfo.arg[1] = PointerGetDatum(columnData);
+        fcinfo.arg[2] = Int32GetDatum(tb->nrow);
+
+		advance_vtransition_function(aggstate, peraggstate, pergroupstate, &fcinfo, transitionFuncName);
+										//&fcinfo, mem_manager);
+
+		/*
+		if (aggref)
+			nargs = list_length(aggref->args);
+		else
+		{
+			Assert (perc);
+			nargs = list_length(perc->args);
+		}
+
+		slot = ExecProject(peraggstate->evalproj, NULL);
+		slot_getallattrs(slot);	
+		
+		if (peraggstate->numSortCols > 0)
+		{
+		}
+		else
+		{
+			FunctionCallInfoData fcinfo;
+			
+			Assert(slot->PRIVATE_tts_nvalid >= nargs);
+			if (aggref)
+			{
+				for (i = 0; i < nargs; i++)
+				{
+					fcinfo.arg[i + 1] = slot_getattr(slot, i+1, &isnull);
+					fcinfo.argnull[i + 1] = isnull;
+				}
+
+			}
+			else
+			{
+				int		natts;
+
+				Assert(perc);
+				natts = slot->tts_tupleDescriptor->natts;
+				for (i = 0; i < natts; i++)
+				{
+					fcinfo.arg[i + 1] = slot_getattr(slot, i + 1, &isnull);
+					fcinfo.argnull[i + 1] = isnull;
+				}
+			}
+		}
+		*/
+	} /* aggno loop */
 
 }
 
@@ -187,5 +349,170 @@ advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
 void
 finalize_vaggregates(AggState *aggstate, AggStatePerGroup pergroup)
 {
+	AggStatePerAgg peragg = aggstate->peragg;
+	ExprContext *econtext = aggstate->ss.ps.ps_ExprContext;
+	Datum *aggvalues = econtext->ecxt_aggvalues;
+	bool *aggnulls = econtext->ecxt_aggnulls;
 
+	for (int aggno = 0; aggno < aggstate->numaggs; aggno++)
+	{
+		AggStatePerAgg peraggstate = &peragg[aggno];
+		AggStatePerGroup pergroupstate = &pergroup[aggno];
+		if ( peraggstate->numSortCols > 0 )
+		{
+			// TODO
+		}
+		finalize_vaggregate(aggstate, peraggstate, pergroupstate,
+  								&aggvalues[aggno], &aggnulls[aggno]);
+	}
+}
+
+/*
+ * Compute the final value of one aggregate.
+ *
+ * The finalfunction will be run, and the result delivered, in the
+ * output-tuple context; caller's CurrentMemoryContext does not matter.
+ */
+void
+finalize_vaggregate(AggState *aggstate,
+				   AggStatePerAgg peraggstate,
+				   AggStatePerGroup pergroupstate,
+				   Datum *resultVal, bool *resultIsNull)
+{
+	MemoryContext oldContext;
+
+	oldContext = MemoryContextSwitchTo(aggstate->ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
+
+	/*
+	 * Apply the agg's finalfn if one is provided, else return transValue.
+	 */
+	if (OidIsValid(peraggstate->finalfn_oid))
+	{
+		FunctionCallInfoData fcinfo;
+
+		InitFunctionCallInfoData(fcinfo, &(peraggstate->finalfn), 1,
+								 (void *) aggstate, NULL);
+		fcinfo.arg[0] = pergroupstate->transValue;
+		fcinfo.argnull[0] = pergroupstate->transValueIsNull;
+		if (fcinfo.flinfo->fn_strict && pergroupstate->transValueIsNull)
+		{
+			/* don't call a strict function with NULL inputs */
+			*resultVal = (Datum) 0;
+			*resultIsNull = true;
+		}
+		else
+		{
+			*resultVal = FunctionCallInvoke(&fcinfo);
+			*resultIsNull = fcinfo.isnull;
+		}
+	}
+	else
+	{
+		*resultVal = pergroupstate->transValue;
+		//*resultIsNull = pergroupstate->transValueIsNull;
+		*resultIsNull = false;
+	}
+
+	/*
+	 * If result is pass-by-ref, make sure it is in the right context.
+	 */
+	if (!peraggstate->resulttypeByVal && !*resultIsNull &&
+		!MemoryContextContainsGenericAllocation(CurrentMemoryContext,
+							   DatumGetPointer(*resultVal)))
+		*resultVal = datumCopy(*resultVal,
+							   peraggstate->resulttypeByVal,
+							   peraggstate->resulttypeLen);
+
+	MemoryContextSwitchTo(oldContext);
+}
+
+
+/*
+ * Similar to advance_transition_function, but in vectorized version we don't
+ * check for nulls. A stripe should be never null. So handling null values is
+ * the responsibility of the related trans function.
+ */
+void
+advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
+									   AggStatePerGroup pergroupstate, 
+									   FunctionCallInfoData *fcinfo,
+										const char *funcName)
+{
+	ExprContext *tmpcontext = aggstate->tmpcontext;
+	TupleTableSlot *scantuple = tmpcontext->ecxt_scantuple;
+	if (scantuple == NULL || scantuple->PRIVATE_tts_data == NULL)
+	{
+		elog(ERROR, "no tuple batch during advance_vaggregates");	
+	}
+
+	TupleBatch tb = (TupleBatch)scantuple->PRIVATE_tts_data;
+
+
+	int	numArguments = peraggstate->numArguments;
+	MemoryContext oldContext;
+	Datum newVal;
+
+	/* we run the transition functions in per-input-tuple memory context */
+	oldContext = MemoryContextSwitchTo(aggstate->tmpcontext->ecxt_per_tuple_memory);
+
+	if (strstr(funcName, "_sum") != NULL)
+	{
+		newVal = int4_sum_vec_internal(tb->columnDataArray[0], tb->nrow);
+	}
+	else
+	{
+		newVal = int8inc_any_vec_internal(tb->columnDataArray[0], tb->nrow);
+	}
+	/* OK to call the transition function */
+/*
+	InitFunctionCallInfoData(*fcinfo, &(peraggstate->transfn), numArguments + 1, (void *) aggstate, NULL);
+	fcinfo->arg[0] = pergroupstate->transValue;
+	fcinfo->argnull[0] = pergroupstate->transValueIsNull;
+	newVal = FunctionCallInvoke(fcinfo);
+*/
+	/*
+	 * If pass-by-ref datatype, must copy the new value into aggcontext and
+	 * pfree the prior transValue.	But if transfn returned a pointer to its
+	 * first input, we don't need to do anything.
+	 */
+	if (!peraggstate->transtypeByVal &&
+		DatumGetPointer(newVal) != DatumGetPointer(pergroupstate->transValue))
+	{
+		if (!fcinfo->isnull)
+		{
+			MemoryContextSwitchTo(aggstate->aggcontext);
+			newVal = datumCopy(newVal, peraggstate->transtypeByVal,
+							   peraggstate->transtypeLen);
+		}
+		if (!pergroupstate->transValueIsNull)
+		{
+			pfree(DatumGetPointer(pergroupstate->transValue));
+		}
+	}
+
+	pergroupstate->transValue = newVal;
+	pergroupstate->transValueIsNull = fcinfo->isnull;
+
+	MemoryContextSwitchTo(oldContext);
+}
+
+
+Datum int4_sum_vec_internal(TupleColumnData *columnData, int nrow)
+{
+	int64 newValue = 0;
+
+	for (int i=0;i<nrow;i++)
+	{
+		if (!columnData->nulls[i])
+		{
+			newValue = newValue + (int64) DatumGetInt32(columnData->values[i]);
+		}
+	}
+
+	return Int64GetDatum(newValue);
+}
+
+Datum int8inc_any_vec_internal(TupleColumnData *columnData, int nrow)
+{
+	return Int64GetDatum(nrow);
 }
