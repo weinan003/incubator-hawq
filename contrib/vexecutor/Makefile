@@ -1,5 +1,5 @@
 MODULE_big = vexecutor
-OBJS    = vexecutor.o parquet_reader.o
+OBJS    = vexecutor.o vfunctions.o parquet_reader.o tuple_batch.o debug.o
 
 PG_CXXFLAGS = -Wall -O0 -g -std=c++11
 PG_LIBS = $(libpq_pgport) 
