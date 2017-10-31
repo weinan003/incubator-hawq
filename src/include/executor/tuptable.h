@@ -133,6 +133,9 @@ typedef struct TupleTableSlot
 	Datum 	*PRIVATE_tts_values;		/* virtual tuple values */
 	bool 	*PRIVATE_tts_isnull;		/* virtual tuple nulls */
 
+	/* additional data for virtual tuple */
+	void	*PRIVATE_tts_data;
+
 	TupleDesc	tts_tupleDescriptor;	/* slot's tuple descriptor */
 	MemTupleBinding *tts_mt_bind;		/* mem tuple's binding */ 
 	MemoryContext 	tts_mcxt;		/* slot itself is in this context */
