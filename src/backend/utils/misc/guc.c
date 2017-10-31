@@ -4093,10 +4093,9 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
     {
-		{"vectorized_executor_enable", PGC_USERSET, DEVELOPER_OPTIONS,
+		{"vectorized_executor_enable", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("enable vectorized executor"),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+			NULL
 		},
 		&vectorized_executor_enable,
 		false, NULL, NULL
