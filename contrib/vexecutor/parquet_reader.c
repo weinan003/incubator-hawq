@@ -171,10 +171,10 @@ parquet_vgetnext(ParquetScanDesc scan, ScanDirection direction, TupleTableSlot *
 					return /*NULL*/;
 				}
 			}
-
+/*
 			StringInfo message = ParquetScanDescToString(scan);
 			elog(LOG, "\n%s", message->data);
-
+*/
 			scan->bufferDone = false;
 		}
 
@@ -187,7 +187,7 @@ parquet_vgetnext(ParquetScanDesc scan, ScanDirection direction, TupleTableSlot *
 								slot);
 		if(row_num > 0)
 		{
-			elog(LOG, "ParquetRowGroupReader_ScanNextTupleBatch: row_num:%d", row_num);
+//			elog(LOG, "ParquetRowGroupReader_ScanNextTupleBatch: row_num:%d", row_num);
 /*
 			int segno = ((FileSplitNode *)list_nth(scan->splits, scan->pqs_splits_processed - 1))->segno;
 			AOTupleIdInit_Init(&aoTupleId);
@@ -265,7 +265,7 @@ ParquetRowGroupReader_ScanNextTupleBatch(
 			if(hawqAttrToParquetColNum[i] == 1)
 			{
 				ParquetColumnReader_readValue(nextReader, &values[j], &nulls[j], hawqTypeID);
-				elog(WARNING, "value:%d null:%d", DatumGetInt32(values[j]), nulls[j]);
+				//elog(WARNING, "value:%d null:%d", DatumGetInt32(values[j]), nulls[j]);
 			}
 			else
 			{
