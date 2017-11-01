@@ -15,6 +15,8 @@ static int ParquetRowGroupReader_ScanNextTupleBatch(TupleDesc tupDesc,
 
 static TupleTableSlot *ExecVProject(TupleTableSlot *orig_slot, ProjectionInfo *projInfo, ExprDoneCond *isDone);
 
+static TupleBatch globalTB = NULL;
+
 TupleTableSlot *
 ExecParquetVScan(TableScanState *node)
 {
@@ -24,6 +26,7 @@ ExecParquetVScan(TableScanState *node)
         scanState->scan_state == SCAN_DONE)
     {
         BeginScanParquetRelation(scanState);
+		globalTB = createMaxTupleBatch();
     }
 
     TupleTableSlot *slot = ExecParquetScanRelation(scanState);
@@ -241,7 +244,10 @@ ParquetRowGroupReader_ScanNextTupleBatch(
 	int nrow = rowGroupReader->rowCount;
 	int ncol = slot->tts_tupleDescriptor->natts;
 	
-	TupleBatch tb = createTupleBatch(nrow, ncol);
+	//TupleBatch tb = createTupleBatch(nrow, ncol);
+	TupleBatch tb = globalTB;
+	tb->nrow = nrow;
+	tb->ncol = ncol;
 	slot->PRIVATE_tts_data = (void *)tb;
 
 	int colReaderIndex = 0;

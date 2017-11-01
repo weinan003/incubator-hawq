@@ -1,6 +1,14 @@
 #include "postgres.h"
 #include "tuple_batch.h"
 
+#define TUPLE_BATCH_ROW_MAX_SIZE	100000
+#define TUPLE_BATCH_COL_MAX_SIZE	100
+
+TupleBatch createMaxTupleBatch()
+{
+	return createTupleBatch(TUPLE_BATCH_ROW_MAX_SIZE, TUPLE_BATCH_COL_MAX_SIZE);
+}
+
 TupleBatch createTupleBatch(int nrow, int ncol)
 {
 	TupleBatch tb = (TupleBatch)palloc0(sizeof(TupleBatchData));
@@ -14,9 +22,9 @@ TupleBatch createTupleBatch(int nrow, int ncol)
 		tb->columnDataArray[i]->values = (Datum *)palloc0(tb->nrow * sizeof(Datum));
 		tb->columnDataArray[i]->nulls = (bool *)palloc0(tb->nrow * sizeof(bool));
 	}
-
+	
+	tb->projs = (int *)palloc0(ncol * sizeof(int));
 	tb->nvalid = 0;
-	tb->projs = NULL;
 
 	return tb;
 }
@@ -54,11 +62,13 @@ TupleColumnData *getTupleBatchColumn(TupleBatch tb, int colIdx)
 void setTupleBatchNValid(TupleBatch tb, int ncol)
 {
 	tb->nvalid = ncol;
+/*
 	if (tb->projs)
 	{
 		pfree(tb->projs);
 	}
 	tb->projs = (int *)palloc0(ncol * sizeof(int));
+*/
 }
 
 void setTupleBatchProjColumn(TupleBatch tb, int colIdx, int value)
