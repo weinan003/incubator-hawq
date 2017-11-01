@@ -13,6 +13,8 @@ static int ParquetRowGroupReader_ScanNextTupleBatch(TupleDesc tupDesc,
 							bool *projs,
 							TupleTableSlot *slot);
 
+static TupleTableSlot *ExecVProject(TupleTableSlot *orig_slot, ProjectionInfo *projInfo, ExprDoneCond *isDone);
+
 TupleTableSlot *
 ExecParquetVScan(TableScanState *node)
 {
@@ -24,8 +26,8 @@ ExecParquetVScan(TableScanState *node)
         BeginScanParquetRelation(scanState);
     }
 
-    //TupleTableSlot *slot = ExecParquetScanRelation(scanState);
-    TupleTableSlot *slot = ParquetVScanNext(scanState);
+    TupleTableSlot *slot = ExecParquetScanRelation(scanState);
+    //TupleTableSlot *slot = ParquetVScanNext(scanState);
 
     if (!TupIsNull(slot))
     {
@@ -117,7 +119,7 @@ ExecParquetScanRelation(ScanState *node)
                  * Form a projection tuple, store it in the result tuple slot
                  * and return it.
                  */
-                return ExecProject(projInfo, NULL);
+                return ExecVProject(slot, projInfo, NULL);
             }
             else
             {
@@ -150,7 +152,7 @@ void
 parquet_vgetnext(ParquetScanDesc scan, ScanDirection direction, TupleTableSlot *slot) 
 {
 
-	AOTupleId aoTupleId;
+	//AOTupleId aoTupleId;
 	Assert(ScanDirectionIsForward(direction));
 
 	for(;;)
@@ -313,3 +315,52 @@ ParquetRowGroupReader_ScanNextTupleBatch(
 	TupSetVirtualTupleNValid(slot, ncol);
 	return tb->nrow;
 }
+
+TupleTableSlot *
+ExecVProject(TupleTableSlot *orig_slot, ProjectionInfo *projInfo, ExprDoneCond *isDone)
+{
+	TupleTableSlot *slot;
+	
+	Assert(projInfo != NULL);
+
+	slot = projInfo->pi_slot;
+
+	ExecClearTuple(slot);
+
+	TupleBatch tb = (TupleBatch)orig_slot->PRIVATE_tts_data; 
+	slot->PRIVATE_tts_data = (void *)tb; 
+
+	if (projInfo->pi_isVarList)
+	{
+		/* simple Var list: this always succeeds with one result row */
+		if (isDone)
+			*isDone = ExprSingleResult;
+
+		//ExecVariableList(projInfo, slot_get_values(slot), slot_get_isnull(slot));
+		setTupleBatchNValid(tb, list_length(projInfo->pi_targetlist));
+
+		int *varNumbers = projInfo->pi_varNumbers;
+		for (int i = list_length(projInfo->pi_targetlist) - 1; i >= 0; i--)
+		{
+			setTupleBatchProjColumn(tb, i, varNumbers[i]);
+		}
+
+		ExecStoreVirtualTuple(slot);
+	}
+	else
+	{
+		elog(ERROR, "never in vagg");
+		/*
+		if (ExecTargetList(projInfo->pi_targetlist,
+						   projInfo->pi_exprContext,
+						   slot_get_values(slot),
+						   slot_get_isnull(slot),
+						   (ExprDoneCond *) projInfo->pi_itemIsDone,
+						   isDone))
+		ExecStoreVirtualTuple(slot);
+		*/
+	}
+
+	return slot;
+}
+

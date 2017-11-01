@@ -3,42 +3,65 @@
 
 TupleBatch createTupleBatch(int nrow, int ncol)
 {
-	TupleBatch tc = (TupleBatch)palloc0(sizeof(TupleBatchData));
-	tc->nrow = nrow;
-	tc->ncol = ncol;
+	TupleBatch tb = (TupleBatch)palloc0(sizeof(TupleBatchData));
+	tb->nrow = nrow;
+	tb->ncol = ncol;
 
-	tc->columnDataArray = (TupleColumnData **)palloc0(tc->ncol * sizeof(TupleColumnData *));
-	for (int i=0;i<tc->ncol;i++)
+	tb->columnDataArray = (TupleColumnData **)palloc0(tb->ncol * sizeof(TupleColumnData *));
+	for (int i=0;i<tb->ncol;i++)
 	{
-		tc->columnDataArray[i] = (TupleColumnData *)palloc0(sizeof(TupleColumnData));
-		tc->columnDataArray[i]->values = (Datum *)palloc0(tc->nrow * sizeof(Datum));
-		tc->columnDataArray[i]->nulls = (bool *)palloc0(tc->nrow * sizeof(bool));
+		tb->columnDataArray[i] = (TupleColumnData *)palloc0(sizeof(TupleColumnData));
+		tb->columnDataArray[i]->values = (Datum *)palloc0(tb->nrow * sizeof(Datum));
+		tb->columnDataArray[i]->nulls = (bool *)palloc0(tb->nrow * sizeof(bool));
 	}
 
-	return tc;
+	tb->nvalid = 0;
+	tb->projs = NULL;
+
+	return tb;
 }
 
-void destroyTupleBatch(TupleBatch tc)
+void destroyTupleBatch(TupleBatch tb)
 {
-	for (int i=0;i<tc->ncol;i++)
+	for (int i=0;i<tb->ncol;i++)
 	{
-		if (tc->columnDataArray[i])
+		if (tb->columnDataArray[i])
 		{
-			if (tc->columnDataArray[i]->values)
+			if (tb->columnDataArray[i]->values)
 			{
-				pfree(tc->columnDataArray[i]->values);
+				pfree(tb->columnDataArray[i]->values);
 			}
-			if (tc->columnDataArray[i]->nulls)
+			if (tb->columnDataArray[i]->nulls)
 			{
-				pfree(tc->columnDataArray[i]->nulls);
+				pfree(tb->columnDataArray[i]->nulls);
 			}
-			pfree(tc->columnDataArray[i]);
+			pfree(tb->columnDataArray[i]);
+		}
+
+		if (tb->projs)
+		{
+			pfree(tb->projs);
 		}
 	}
-	pfree(tc);
+	pfree(tb);
 }
 
-TupleColumnData *getTupleBatchColumn(TupleBatch tc, int colIdx)
+TupleColumnData *getTupleBatchColumn(TupleBatch tb, int colIdx)
 {
-	return tc->columnDataArray[colIdx];
+	return tb->columnDataArray[colIdx];
+}
+
+void setTupleBatchNValid(TupleBatch tb, int ncol)
+{
+	tb->nvalid = ncol;
+	if (tb->projs)
+	{
+		pfree(tb->projs);
+	}
+	tb->projs = (int *)palloc0(ncol * sizeof(int));
+}
+
+void setTupleBatchProjColumn(TupleBatch tb, int colIdx, int value)
+{
+	tb->projs[colIdx] = value;
 }

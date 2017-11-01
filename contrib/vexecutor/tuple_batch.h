@@ -7,15 +7,22 @@ typedef struct TupleColumnData {
 } TupleColumnData;
 
 typedef struct TupleBatchData {
+	// for original scan tuples
 	int				nrow;
 	int				ncol;
+	
+	// for projection
+	int				nvalid;
+	int				*projs;
+
+	// original scan column data
 	TupleColumnData	**columnDataArray;
 } TupleBatchData, *TupleBatch;
 
 TupleBatch createTupleBatch(int nrow, int ncol);
-void destroyTupleBatch(TupleBatch tc);
-TupleColumnData *getTupleBatchColumn(TupleBatch tc, int colIdx);
-
-
+void destroyTupleBatch(TupleBatch tb);
+TupleColumnData *getTupleBatchColumn(TupleBatch tb, int colIdx);
+void setTupleBatchNValid(TupleBatch tb, int ncol);
+void setTupleBatchProjColumn(TupleBatch tb, int colIdx, int value);
 
 #endif

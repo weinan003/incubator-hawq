@@ -40,7 +40,7 @@ static void finalize_vaggregate(AggState *aggstate,
 									AggStatePerGroup pergroupstate,
 									Datum *resultVal, 
 									bool *resultIsNull);
-	
+
 static Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow);
 static Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow);
 
@@ -132,8 +132,6 @@ vagg_retrieve_scalar(AggState *aggstate)
 		ResetExprContext(tmpcontext);
 		PlanState *outerPlan = outerPlanState(aggstate);
 		TupleTableSlot *outerslot = ExecParquetVScan((TableScanState *)outerPlan);
-			
-		
 			
 		if (TupIsNull(outerslot))
 		{
@@ -249,7 +247,7 @@ advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
 		//Aggref	   *aggref = peraggstate->aggref;
 		//PercentileExpr *perc = peraggstate->perc;
 		//int			i;
-		//TupleTableSlot *slot;
+		TupleTableSlot *slot;
 		//int nargs;
         char *transitionFuncName = NULL;
         char vectorTransitionFuncName[NAMEDATALEN];
@@ -257,7 +255,7 @@ advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
         FuncCandidateList vectorTransitionFuncList = NULL;
         FunctionCallInfoData fcinfo;
 
-		TupleColumnData *columnData = NULL; 
+		//TupleColumnData *columnData = NULL; 
         
 		/* simple check to handle count(*) */
 /*
@@ -268,7 +266,7 @@ advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
             columnData = tb->columnDataArray[columnIndex];
         }
 */
-        columnData = tb->columnDataArray[0];
+        //columnData = tb->columnDataArray[0];
         
 
 		/*
@@ -296,9 +294,9 @@ advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
 						transitionFuncName,
 						vectorTransitionFuncName,
 						functionOid);
-*/
         fcinfo.arg[1] = PointerGetDatum(columnData);
         fcinfo.arg[2] = Int32GetDatum(tb->nrow);
+*/
 
 		advance_vtransition_function(aggstate, peraggstate, pergroupstate, &fcinfo, transitionFuncName);
 										//&fcinfo, mem_manager);
@@ -455,24 +453,26 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 
 	TupleBatch tb = (TupleBatch)scantuple->PRIVATE_tts_data;
 
-
 	int	numArguments = peraggstate->numArguments;
 	MemoryContext oldContext;
 	Datum newVal;
+
+	int columnIndex = tb->projs[0] - 1;
+   	TupleColumnData *columnData = tb->columnDataArray[columnIndex];
 
 	/* we run the transition functions in per-input-tuple memory context */
 	oldContext = MemoryContextSwitchTo(aggstate->tmpcontext->ecxt_per_tuple_memory);
 
 	if (strstr(funcName, "_sum") != NULL)
 	{
-		newVal = int4_sum_vec_internal(pergroupstate->transValue, tb->columnDataArray[0], tb->nrow);
+		newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, tb->nrow);
 	}
 	else
 	{
-		newVal = int8inc_any_vec_internal(pergroupstate->transValue, tb->columnDataArray[0], tb->nrow);
+		newVal = int8inc_any_vec_internal(pergroupstate->transValue, columnData, tb->nrow);
 	}
 	
-	elog(NOTICE, "newValue after transition is %lld", DatumGetInt64(newVal));
+	//elog(NOTICE, "colIdx:%d newValue after transition is %lld", columnIndex, DatumGetInt64(newVal));
 
 	/* OK to call the transition function */
 /*
