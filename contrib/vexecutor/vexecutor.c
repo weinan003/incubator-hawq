@@ -457,7 +457,8 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	MemoryContext oldContext;
 	Datum newVal;
 
-	int columnIndex = tb->projs[0] - 1;
+	int projIdx = peraggstate->evalproj->pi_varNumbers[0]-1;
+	int columnIndex = tb->projs[projIdx] - 1;
    	TupleColumnData *columnData = tb->columnDataArray[columnIndex];
 
 	/* we run the transition functions in per-input-tuple memory context */
