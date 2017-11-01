@@ -41,8 +41,8 @@ static void finalize_vaggregate(AggState *aggstate,
 									Datum *resultVal, 
 									bool *resultIsNull);
 	
-static Datum int4_sum_vec_internal(TupleColumnData *columnData, int nrow);
-static Datum int8inc_any_vec_internal(TupleColumnData *columnData, int nrow);
+static Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow);
+static Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow);
 
 /*
  * _PG_init is called when the module is loaded. In this function we save the
@@ -124,6 +124,7 @@ vagg_retrieve_scalar(AggState *aggstate)
 	/*
 	 * We loop through input tuples, and compute the aggregates.
 	 */
+	int rcounter = 0;
 	while (!aggstate->agg_done)
    	{
 		ExprContext *tmpcontext = aggstate->tmpcontext;
@@ -131,6 +132,9 @@ vagg_retrieve_scalar(AggState *aggstate)
 		ResetExprContext(tmpcontext);
 		PlanState *outerPlan = outerPlanState(aggstate);
 		TupleTableSlot *outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+			
+		
+			
 		if (TupIsNull(outerslot))
 		{
 			aggstate->agg_done = true;
@@ -139,6 +143,10 @@ vagg_retrieve_scalar(AggState *aggstate)
 		//Gpmon_M_Incr(GpmonPktFromAggState(aggstate), GPMON_QEXEC_M_ROWSIN);
 		//CheckSendPlanStateGpmonPkt(&aggstate->ss.ps);
 
+		TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
+		rcounter += tb->nrow;
+		//elog(NOTICE, "row count is :%d", rcounter);	
+	
 		//print_slot(outerslot);
 		//dumpTupleBatch(outerslot);
 
@@ -457,12 +465,15 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 
 	if (strstr(funcName, "_sum") != NULL)
 	{
-		newVal = int4_sum_vec_internal(tb->columnDataArray[0], tb->nrow);
+		newVal = int4_sum_vec_internal(pergroupstate->transValue, tb->columnDataArray[0], tb->nrow);
 	}
 	else
 	{
-		newVal = int8inc_any_vec_internal(tb->columnDataArray[0], tb->nrow);
+		newVal = int8inc_any_vec_internal(pergroupstate->transValue, tb->columnDataArray[0], tb->nrow);
 	}
+	
+	elog(NOTICE, "newValue after transition is %lld", DatumGetInt64(newVal));
+
 	/* OK to call the transition function */
 /*
 	InitFunctionCallInfoData(*fcinfo, &(peraggstate->transfn), numArguments + 1, (void *) aggstate, NULL);
@@ -497,22 +508,22 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 }
 
 
-Datum int4_sum_vec_internal(TupleColumnData *columnData, int nrow)
+Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow)
 {
-	int64 newValue = 0;
+	int64 newValue = DatumGetInt64(origValue);
 
 	for (int i=0;i<nrow;i++)
 	{
-		if (!columnData->nulls[i])
-		{
+//		if (!columnData->nulls[i])
+//		{
 			newValue = newValue + (int64) DatumGetInt32(columnData->values[i]);
-		}
+//		}
 	}
 
 	return Int64GetDatum(newValue);
 }
 
-Datum int8inc_any_vec_internal(TupleColumnData *columnData, int nrow)
+Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow)
 {
-	return Int64GetDatum(nrow);
+	return Int64GetDatum(DatumGetInt64(origValue) + nrow);
 }
