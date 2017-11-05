@@ -2,11 +2,10 @@
 #include "tuple_batch.h"
 
 #define TUPLE_BATCH_ROW_MAX_SIZE	100000
-#define TUPLE_BATCH_COL_MAX_SIZE	100
 
-TupleBatch createMaxTupleBatch()
+TupleBatch createMaxTupleBatch(int ncol)
 {
-	return createTupleBatch(TUPLE_BATCH_ROW_MAX_SIZE, TUPLE_BATCH_COL_MAX_SIZE);
+	return createTupleBatch(TUPLE_BATCH_ROW_MAX_SIZE, ncol);
 }
 
 TupleBatch createTupleBatch(int nrow, int ncol)

@@ -26,10 +26,8 @@ ExecParquetVScan(TableScanState *node)
         scanState->scan_state == SCAN_DONE)
     {
         BeginScanParquetRelation(scanState);
-		if (globalTB == NULL)
-		{
-			globalTB = createMaxTupleBatch();
-		}
+		ParquetScanState *pss = (ParquetScanState *)scanState;
+		globalTB = createMaxTupleBatch(pss->opaque->scandesc->pqs_tupDesc->natts);
     }
 
     TupleTableSlot *slot = ExecParquetScanRelation(scanState);
