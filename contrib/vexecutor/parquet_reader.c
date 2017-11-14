@@ -27,11 +27,14 @@ ExecParquetVScan(TableScanState *node)
     {
         BeginScanParquetRelation(scanState);
 		ParquetScanState *pss = (ParquetScanState *)scanState;
-		globalTB = createMaxTupleBatch(pss->opaque->scandesc->pqs_tupDesc->natts);
+		globalTB = createMaxTupleBatch(pss->opaque->scandesc->pqs_tupDesc->natts, pss->opaque->scandesc->pqs_tupDesc, pss->opaque->proj);
     }
 
+	resetTupleBatch(globalTB);
     TupleTableSlot *slot = ExecParquetScanRelation(scanState);
+	//print_slot(slot);
     //TupleTableSlot *slot = ParquetVScanNext(scanState);
+
 
     if (!TupIsNull(slot))
     {
@@ -193,6 +196,9 @@ parquet_vgetnext(ParquetScanDesc scan, ScanDirection direction, TupleTableSlot *
 								slot);
 		if(row_num > 0)
 		{
+			//TupleBatch tb = (TupleBatch)slot->PRIVATE_tts_data;
+			//tb->projs = scan->proj;
+
 //			elog(LOG, "ParquetRowGroupReader_ScanNextTupleBatch: row_num:%d", row_num);
 /*
 			int segno = ((FileSplitNode *)list_nth(scan->splits, scan->pqs_splits_processed - 1))->segno;
