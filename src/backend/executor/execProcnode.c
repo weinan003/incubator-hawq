@@ -153,6 +153,7 @@ static void ExecCdbTraceNode(PlanState *node, bool entry, TupleTableSlot *result
 #endif   /* CDB_TRACE_EXECUTOR */
 
 exec_agg_hook_type exec_agg_hook = NULL;
+exec_scan_hook_type exec_scan_hook = NULL;
 
 
  /* flags bits for planstate walker */
@@ -932,7 +933,12 @@ Exec_Jmp_BitmapOr:
 	goto Exec_Jmp_Done;
 
 Exec_Jmp_TableScan:
-	result = ExecTableScan((TableScanState *)node);
+	if (NULL != exec_scan_hook && vectorized_executor_enable) {
+		result = (*exec_scan_hook)((TableScanState*) node);
+	} else {
+		result = ExecTableScan((TableScanState *)node);
+	}
+	
 	goto Exec_Jmp_Done;
 
 Exec_Jmp_DynamicTableScan:

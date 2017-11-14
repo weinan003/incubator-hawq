@@ -173,7 +173,7 @@ static void finalize_aggregates(AggState *aggstate, AggStatePerGroup pergroup);
 static Bitmapset *find_unaggregated_cols(AggState *aggstate);
 static bool find_unaggregated_cols_walker(Node *node, Bitmapset **colnos);
 static TupleTableSlot *agg_retrieve_direct(AggState *aggstate);
-static TupleTableSlot *agg_retrieve_hash_table(AggState *aggstate);
+TupleTableSlot *agg_retrieve_hash_table(AggState *aggstate);
 static void ExecAggExplainEnd(PlanState *planstate, struct StringInfoData *buf);
 static int count_extra_agg_slots(Node *node);
 static bool count_extra_agg_slots_walker(Node *node, int *count);
@@ -1708,7 +1708,7 @@ agg_retrieve_direct(AggState *aggstate)
 /*
  * ExecAgg for hashed case: retrieve groups from hash table
  */
-static TupleTableSlot *
+TupleTableSlot *
 agg_retrieve_hash_table(AggState *aggstate)
 {
 	ExprContext *econtext;
