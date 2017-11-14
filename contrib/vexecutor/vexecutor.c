@@ -5,15 +5,26 @@
 #include "catalog/namespace.h"
 #include "utils/lsyscache.h"
 #include "utils/builtins.h"
+#include "executor/executor.h"
+#include "executor/execHHashagg.h"
+#include "executor/nodeAgg.h"
+#include "../backend/executor/execHHashagg.c"
 
 PG_MODULE_MAGIC;
 
 static exec_agg_hook_type PreviousExecAggHook = NULL;
+static exec_scan_hook_type PreviousExecScanHook = NULL;
 
 /*
  * hook function
  */
 static TupleTableSlot *VExecAgg(AggState *node);
+static TupleTableSlot *VExecScan(TableScanState *node);
+
+/*
+ * extern function
+ */
+extern TupleTableSlot *agg_retrieve_hash_table(AggState *aggstate);
 
 /*
  * vectorized function for agg
@@ -41,6 +52,9 @@ static void finalize_vaggregate(AggState *aggstate,
 									Datum *resultVal, 
 									bool *resultIsNull);
 
+// ExecAgg for hashed case.
+static bool vagg_hash_initial_pass(AggState *aggstate);
+
 static Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow);
 static Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow);
 
@@ -54,6 +68,9 @@ _PG_init(void)
 {
 	PreviousExecAggHook = exec_agg_hook;
 	exec_agg_hook = VExecAgg;
+	
+	//PreviousExecScanHook = exec_scan_hook;
+	//exec_scan_hook = VExecScan;
 }
 
 /*
@@ -64,7 +81,15 @@ void
 _PG_fini(void)
 {
 	exec_agg_hook = PreviousExecAggHook;
+	//exec_scan_hook = PreviousExecScanHook;
 }
+
+TupleTableSlot *
+VExecScan(TableScanState *node)
+{
+	return ExecParquetVScan(node);
+}
+
 
 TupleTableSlot *
 VExecAgg(AggState *node)
@@ -75,9 +100,68 @@ VExecAgg(AggState *node)
 		return NULL;
 	}
 
-	if (((Agg *) node->ss.ps.plan)->aggstrategy != AGG_PLAIN)
+	elog(NOTICE, "call VExecAgg");
+
+	if (((Agg *) node->ss.ps.plan)->aggstrategy == AGG_HASHED)
 	{
-		goto fallback;	
+		TupleTableSlot *tuple = NULL;
+		bool streaming = ((Agg *) node->ss.ps.plan)->streaming;
+	
+		if (node->hhashtable == NULL)
+		{
+			bool tupremain;
+			
+			node->hhashtable = create_agg_hash_table(node);
+			tupremain = vagg_hash_initial_pass(node);
+			
+			if ( streaming )
+			{
+				if ( tupremain )
+					node->hhashtable->state = HASHAGG_STREAMING;
+				else
+					node->hhashtable->state = HASHAGG_END_OF_PASSES;
+			}
+			else
+				node->hhashtable->state = HASHAGG_BETWEEN_PASSES;
+		}
+		
+		for (;;)
+		{
+			if (!node->hhashtable->is_spilling)
+			{
+				tuple = agg_retrieve_hash_table(node);
+				node->agg_done = false; 
+				
+				if (tuple != NULL)
+					return tuple;
+			}
+		
+			switch (node->hhashtable->state)
+			{
+				case HASHAGG_BETWEEN_PASSES:
+					Assert(!streaming);
+					if (agg_hash_next_pass(node))
+					{
+						node->hhashtable->state = HASHAGG_BETWEEN_PASSES;
+						continue;
+					}
+					node->hhashtable->state = HASHAGG_END_OF_PASSES;
+				case HASHAGG_END_OF_PASSES:
+					node->agg_done = true;
+					ExecEagerFreeAgg(node);
+					return NULL;
+
+				case HASHAGG_STREAMING:
+					Assert(streaming);
+					if ( !agg_hash_stream(node) )
+						node->hhashtable->state = HASHAGG_END_OF_PASSES;
+					continue;
+
+				case HASHAGG_BEFORE_FIRST_PASS:
+				default:
+					elog(ERROR,"hybrid hash aggregation sequencing error");
+			}
+		}
 	}
 	else
 	{
@@ -508,6 +592,144 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	MemoryContextSwitchTo(oldContext);
 }
 
+/* Function: agg_hash_initial_pass
+ *
+ * Performs ExecAgg initialization for the first pass of the hashed case:
+ * - reads the input tuples,
+ * - builds a hash table with an entry per group,
+ * - spills all groups in the hash table to several overflow batches
+ *   to be processed during later passes.
+ *
+ * Note that overflowed groups are distributed to batches in such
+ * a way that groups with matching grouping keys will be in the same
+ * batch.
+ *
+ * When called, CurrentMemoryContext should be the per-query context.
+ */
+
+bool
+vagg_hash_initial_pass(AggState *aggstate)
+{
+	HashAggTable *hashtable = aggstate->hhashtable;
+	ExprContext *tmpcontext = aggstate->tmpcontext; 
+	TupleTableSlot *outerslot = NULL;
+	bool streaming = ((Agg *) aggstate->ss.ps.plan)->streaming;
+	bool tuple_remaining = true;
+	MemTupleBinding *mt_bind = aggstate->hashslot->tts_mt_bind;
+	PlanState *outerPlan = outerPlanState(aggstate);
+
+	Assert(hashtable);
+	AssertImply(!streaming, hashtable->state == HASHAGG_BEFORE_FIRST_PASS);
+
+	if (aggstate->hashslot->tts_tupleDescriptor != NULL &&
+		hashtable->prev_slot != NULL)
+	{
+		outerslot = hashtable->prev_slot;
+		hashtable->prev_slot = NULL;
+	}
+	
+	else
+	{
+		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+	}
+
+	hashtable->pass = 0;
+
+	while(true)
+	{
+		HashKey hashkey;
+		bool isNew;
+		HashAggEntry *entry;
+
+		if (TupIsNull(outerslot))
+		{
+			tuple_remaining = false;
+			break;
+		}
+
+		TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
+
+		for (int i=0;i<tb->nrow;i++)
+		{
+			TupleTableSlot *scanslot = getNextRowFromTupleBatch(tb, outerslot->tts_tupleDescriptor);	
+
+			if (aggstate->hashslot->tts_tupleDescriptor == NULL)
+			{
+				int size;
+								
+				ExecSetSlotDescriptor(aggstate->hashslot, outerslot->tts_tupleDescriptor); 
+				ExecStoreAllNullTuple(aggstate->hashslot);
+				mt_bind = aggstate->hashslot->tts_mt_bind;
+
+				size = ((Agg *)aggstate->ss.ps.plan)->numCols * sizeof(HashKey);
+				
+				hashtable->hashkey_buf = (HashKey *)palloc0(size);
+				hashtable->mem_for_metadata += size;
+			}
+
+			tmpcontext->ecxt_scantuple = scanslot;
+
+			hashkey = calc_hash_value(aggstate, scanslot);
+			entry = lookup_agg_hash_entry(aggstate, (void *)scanslot, 0, 0, hashkey, 0, &isNew);
+			
+			if (entry == NULL)
+			{
+				if (GET_TOTAL_USED_SIZE(hashtable) > hashtable->mem_used)
+					hashtable->mem_used = GET_TOTAL_USED_SIZE(hashtable);
+
+				if (hashtable->num_ht_groups <= 1)
+					ereport(ERROR,
+							(errcode(ERRCODE_GP_INTERNAL_ERROR),
+									 ERRMSG_GP_INSUFFICIENT_STATEMENT_MEMORY));
+				
+				if (streaming)
+				{
+					Assert(tuple_remaining);
+					hashtable->prev_slot = scanslot;
+					break;
+				}
+
+				if (!hashtable->is_spilling && aggstate->ss.ps.instrument)
+					agg_hash_table_stat_upd(hashtable);
+			}
+
+			setGroupAggs(hashtable, mt_bind, entry);
+			
+			if (isNew)
+			{
+				elog(NOTICE, "new hash group for key:%u", hashkey);
+				int tup_len = memtuple_get_size((MemTuple)entry->tuple_and_aggs, mt_bind);
+				MemSet((char *)entry->tuple_and_aggs + MAXALIGN(tup_len), 0,
+					   aggstate->numaggs * sizeof(AggStatePerGroupData));
+				initialize_aggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs,
+									  &(aggstate->mem_manager));
+			}
+				
+			advance_aggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
+			
+			hashtable->num_tuples++;
+
+			ResetExprContext(tmpcontext);
+
+			if (streaming && !HAVE_FREESPACE(hashtable))
+			{
+				Assert(tuple_remaining);
+				ExecClearTuple(aggstate->hashslot);
+				break;
+			}
+
+		}
+
+		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+	}
+
+	if (GET_TOTAL_USED_SIZE(hashtable) > hashtable->mem_used)
+		hashtable->mem_used = GET_TOTAL_USED_SIZE(hashtable);
+
+   	AssertImply(tuple_remaining, streaming);
+
+	return tuple_remaining;
+}
 
 Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow)
 {
