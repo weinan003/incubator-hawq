@@ -469,6 +469,7 @@ invoke_agg_trans_func(FmgrInfo *transfn, int numargs, Datum transValue,
 	fcinfo->argnull[0] = *transValueIsNull;
 
 	newVal = FunctionCallInvoke(fcinfo);
+	//newVal = transValue+1;
 
 	/*
 	 * If pass-by-ref datatype, must copy the new value into aggcontext and

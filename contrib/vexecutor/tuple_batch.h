@@ -3,6 +3,8 @@
 
 #include "executor/tuptable.h"
 
+#define BATCH_SIZE 1024
+
 typedef struct TupleColumnData {
 	Datum	*values;
 	bool	*nulls;

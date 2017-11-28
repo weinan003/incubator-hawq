@@ -5,7 +5,8 @@
 
 TupleBatch createMaxTupleBatch(int ncol, TupleDesc tupdesc, bool *projs)
 {
-	return createTupleBatch(TUPLE_BATCH_ROW_MAX_SIZE, ncol, tupdesc, projs);
+	//return createTupleBatch(TUPLE_BATCH_ROW_MAX_SIZE, ncol, tupdesc, projs);
+	return createTupleBatch(BATCH_SIZE, ncol, tupdesc, projs);
 }
 
 TupleBatch createTupleBatch(int nrow, int ncol, TupleDesc tupdesc, bool *projs)

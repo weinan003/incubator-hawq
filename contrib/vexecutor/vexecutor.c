@@ -617,6 +617,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 	bool tuple_remaining = true;
 	MemTupleBinding *mt_bind = aggstate->hashslot->tts_mt_bind;
 	PlanState *outerPlan = outerPlanState(aggstate);
+	bool print_nrows = true;
 
 	Assert(hashtable);
 	AssertImply(!streaming, hashtable->state == HASHAGG_BEFORE_FIRST_PASS);
@@ -635,6 +636,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 	hashtable->pass = 0;
 
+	//First, it reads input and builds the hash table.
 	while(true)
 	{
 		HashKey hashkey;
@@ -648,6 +650,10 @@ vagg_hash_initial_pass(AggState *aggstate)
 		}
 
 		TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
+		if (print_nrows) {
+			elog(NOTICE, "batch row size:%d", tb->nrow);
+			print_nrows = false;
+		}
 
 		for (int i=0;i<tb->nrow;i++)
 		{
@@ -704,8 +710,10 @@ vagg_hash_initial_pass(AggState *aggstate)
 				initialize_aggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs,
 									  &(aggstate->mem_manager));
 			}
-				
+
+
 			advance_aggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
+
 			
 			hashtable->num_tuples++;
 
@@ -723,6 +731,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
 	}
 
+	//Second, the function retrieves the aggregated tuples from the hash table and returns them.
 	if (GET_TOTAL_USED_SIZE(hashtable) > hashtable->mem_used)
 		hashtable->mem_used = GET_TOTAL_USED_SIZE(hashtable);
 

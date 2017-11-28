@@ -27,7 +27,8 @@ ExecParquetVScan(TableScanState *node)
     {
         BeginScanParquetRelation(scanState);
 		ParquetScanState *pss = (ParquetScanState *)scanState;
-		globalTB = createMaxTupleBatch(pss->opaque->scandesc->pqs_tupDesc->natts, pss->opaque->scandesc->pqs_tupDesc, pss->opaque->proj);
+		globalTB = createMaxTupleBatch(pss->opaque->scandesc->pqs_tupDesc->natts,
+				pss->opaque->scandesc->pqs_tupDesc, pss->opaque->proj);
     }
 
 	resetTupleBatch(globalTB);
@@ -247,9 +248,16 @@ ParquetRowGroupReader_ScanNextTupleBatch(
 	/*
 	 * get the next item (tuple) from the row group
 	 */
-	rowGroupReader->rowRead = rowGroupReader->rowCount;
-	int nrow = rowGroupReader->rowCount;
+	int nrow = 0;
 	int ncol = slot->tts_tupleDescriptor->natts;
+	if (rowGroupReader->rowRead + BATCH_SIZE > rowGroupReader->rowCount) {
+		nrow = rowGroupReader->rowCount-rowGroupReader->rowRead;
+		rowGroupReader->rowRead = rowGroupReader->rowCount;
+	}
+	else {
+		nrow = BATCH_SIZE;
+		rowGroupReader->rowRead += BATCH_SIZE;
+	}
 	
 	//TupleBatch tb = createTupleBatch(nrow, ncol);
 	TupleBatch tb = globalTB;
