@@ -55,8 +55,12 @@ static void finalize_vaggregate(AggState *aggstate,
 // ExecAgg for hashed case.
 static bool vagg_hash_initial_pass(AggState *aggstate);
 
+// plain agg
 static Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+
+// group agg
+static Datum int4_sum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 
 
@@ -375,7 +379,9 @@ advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
             functionOid = vectorTransitionFuncList->oid;
             fmgr_info(functionOid, &peraggstate->transfn);
         }
-/*
+
+        //transitionFuncName:int4_sum vectorTransitionFuncName:int4_sum_vec functionOid:0
+        /*
 		elog(LOG, "transitionFuncName:%s vectorTransitionFuncName:%s functionOid:%d",
 						transitionFuncName,
 						vectorTransitionFuncName,
@@ -518,7 +524,6 @@ finalize_vaggregate(AggState *aggstate,
 	MemoryContextSwitchTo(oldContext);
 }
 
-
 /*
  * Similar to advance_transition_function, but in vectorized version we don't
  * check for nulls. A stripe should be never null. So handling null values is
@@ -544,7 +549,13 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	Datum newVal;
 
 	int projIdx = peraggstate->evalproj->pi_varNumbers[0]-1;
-	int columnIndex = tb->projs[projIdx] - 1;
+
+	int columnIndex = 0;
+	if (tb->group_cnt > 0)
+		columnIndex = tb->vprojs[projIdx] - 1;
+	else
+		columnIndex = tb->projs[projIdx] - 1;
+
    	TupleColumnData *columnData = tb->columnDataArray[columnIndex];
 
 	/* we run the transition functions in per-input-tuple memory context */
@@ -552,7 +563,12 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 
 	if (strstr(funcName, "_sum") != NULL)
 	{
-		newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, tb);
+		//sum
+		if (tb->group_cnt > 0)
+			//groupby
+			newVal = int4_sum_vec_group_internal(pergroupstate->transValue, columnData, tb);
+		else
+			newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, tb);
 	}
 	else
 	{
@@ -578,6 +594,8 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	 * pfree the prior transValue.	But if transfn returned a pointer to its
 	 * first input, we don't need to do anything.
 	 */
+
+
 	if (!peraggstate->transtypeByVal &&
 		DatumGetPointer(newVal) != DatumGetPointer(pergroupstate->transValue))
 	{
@@ -592,6 +610,7 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 			pfree(DatumGetPointer(pergroupstate->transValue));
 		}
 	}
+
 
 	pergroupstate->transValue = newVal;
 	pergroupstate->transValueIsNull = fcinfo->isnull;
@@ -642,8 +661,8 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 	hashtable->pass = 0;
 
-	TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
 
+	TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
 	//the below items only need init once
 	ExecStoreAllNullTuple(tb->rowSlot);
 	int nvalid = tb->nvalid;
@@ -653,12 +672,12 @@ vagg_hash_initial_pass(AggState *aggstate)
 	for (int i=0;i<nvalid;i++)
 		tb->rowSlot->PRIVATE_tts_isnull[i] = false;
 
+
 	while(true)
 	{
 		HashKey hashkey;
 		bool isNew;
 		HashAggEntry *entry;
-
 		if (TupIsNull(outerslot))
 		{
 			tuple_remaining = false;
@@ -700,6 +719,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 			
 			if (entry == NULL)
 			{
+				elog(NOTICE, "hashtable is full");
 				if (GET_TOTAL_USED_SIZE(hashtable) > hashtable->mem_used)
 					hashtable->mem_used = GET_TOTAL_USED_SIZE(hashtable);
 
@@ -724,7 +744,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 			{
 				setGroupAggs(hashtable, mt_bind, entry);
 
-				elog(NOTICE, "new hash group for key:%u", hashkey);
+				//elog(NOTICE, "new hash group for key:%u", hashkey);
 				int tup_len = memtuple_get_size((MemTuple)entry->tuple_and_aggs, mt_bind);
 				MemSet((char *)entry->tuple_and_aggs + MAXALIGN(tup_len), 0,
 					   aggstate->numaggs * sizeof(AggStatePerGroupData));
@@ -772,13 +792,15 @@ vagg_hash_initial_pass(AggState *aggstate)
 			GroupData *cur_header = &(tb->group_header[i]);
 			tb->group_idx = i;
 			tmpcontext->ecxt_scantuple = outerslot;
+
 			//set hashtable->groupaggs to the agg_hash_entry
-			setGroupAggs(hashtable, mt_bind, cur_header->entry);
+			setGroupAggs(hashtable, aggstate->hashslot->tts_mt_bind, cur_header->entry);
 
 			advance_vaggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
 			//advance_aggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
 		}
 
+		ResetExprContext(tmpcontext);
 		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
 	}
 
@@ -810,6 +832,23 @@ Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, Tup
 {
 	int nrow = tb->nrow;
 	return Int64GetDatum(DatumGetInt64(origValue) + nrow);
+}
+
+//group sum
+Datum int4_sum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+	int64 newValue = DatumGetInt64(origValue);
+	GroupData *cur_header = &(tb->group_header[tb->group_idx]);
+
+	int cur_idx = cur_header->idx;
+	//go through the current linklist and calculate the item sum
+	while (cur_idx != -1) {
+		int64 cur_value = (int64) DatumGetInt32(columnData->values[cur_idx]);
+		newValue += cur_value;
+		cur_idx = tb->idx_list[cur_idx];
+	}
+
+	return Int64GetDatum(newValue);
 }
 
 //group count
