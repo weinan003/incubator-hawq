@@ -55,8 +55,10 @@ static void finalize_vaggregate(AggState *aggstate,
 // ExecAgg for hashed case.
 static bool vagg_hash_initial_pass(AggState *aggstate);
 
-static Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow);
-static Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow);
+static Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+static Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+static Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+
 
 /*
  * _PG_init is called when the module is loaded. In this function we save the
@@ -550,11 +552,16 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 
 	if (strstr(funcName, "_sum") != NULL)
 	{
-		newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, tb->nrow);
+		newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, tb);
 	}
 	else
 	{
-		newVal = int8inc_any_vec_internal(pergroupstate->transValue, columnData, tb->nrow);
+		//count
+		if (tb->group_cnt > 0)
+			//groupby
+			newVal = int8inc_any_vec_group_internal(pergroupstate->transValue, columnData, tb);
+		else
+			newVal = int8inc_any_vec_internal(pergroupstate->transValue, columnData, tb);
 	}
 	
 	//elog(NOTICE, "colIdx:%d newValue after transition is %lld", columnIndex, DatumGetInt64(newVal));
@@ -606,7 +613,6 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
  *
  * When called, CurrentMemoryContext should be the per-query context.
  */
-
 bool
 vagg_hash_initial_pass(AggState *aggstate)
 {
@@ -636,7 +642,17 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 	hashtable->pass = 0;
 
-	//First, it reads input and builds the hash table.
+	TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
+
+	//the below items only need init once
+	ExecStoreAllNullTuple(tb->rowSlot);
+	int nvalid = tb->nvalid;
+	if (tb->nvalid <= 0)
+		nvalid = tb->ncol;
+	TupSetVirtualTupleNValid(tb->rowSlot, nvalid);
+	for (int i=0;i<nvalid;i++)
+		tb->rowSlot->PRIVATE_tts_isnull[i] = false;
+
 	while(true)
 	{
 		HashKey hashkey;
@@ -649,11 +665,15 @@ vagg_hash_initial_pass(AggState *aggstate)
 			break;
 		}
 
-		TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
 		if (print_nrows) {
 			elog(NOTICE, "batch row size:%d", tb->nrow);
 			print_nrows = false;
 		}
+		
+		//init the group linklist's elements
+		tb->group_cnt = 0;
+		for (int i = 0; i < BATCH_SIZE; i++)
+			tb->idx_list[i] = -1;
 
 		for (int i=0;i<tb->nrow;i++)
 		{
@@ -699,10 +719,11 @@ vagg_hash_initial_pass(AggState *aggstate)
 					agg_hash_table_stat_upd(hashtable);
 			}
 
-			setGroupAggs(hashtable, mt_bind, entry);
 			
 			if (isNew)
 			{
+				setGroupAggs(hashtable, mt_bind, entry);
+
 				elog(NOTICE, "new hash group for key:%u", hashkey);
 				int tup_len = memtuple_get_size((MemTuple)entry->tuple_and_aggs, mt_bind);
 				MemSet((char *)entry->tuple_and_aggs + MAXALIGN(tup_len), 0,
@@ -711,10 +732,28 @@ vagg_hash_initial_pass(AggState *aggstate)
 									  &(aggstate->mem_manager));
 			}
 
+			//First, builds the group linklist.
+			GroupData *cur_header = NULL;
+			//find current group_header if exists, just a O(n) find
+			for (int j = 0; j < tb->group_cnt; j++)
+				if (tb->group_header[j].entry == entry)
+					cur_header = &(tb->group_header[j]);
 
-			advance_aggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
+			if (cur_header == NULL) {
+				// add a new group header
+				tb->group_header[tb->group_cnt].idx = i;
+				tb->group_header[tb->group_cnt].entry = entry;
+				tb->group_cnt++;
+			}
+			else {
+				//group header already exists, just insert the current tuple to the "neck"
+				tb->idx_list[i] = cur_header->idx;
+				cur_header->idx = i;
+			}
 
-			
+			//no need call advance_aggregates in each tuple
+			//advance_aggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
+
 			hashtable->num_tuples++;
 
 			ResetExprContext(tmpcontext);
@@ -728,10 +767,21 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 		}
 
+		//Second, call advance_aggregates in each agg group.
+		for (int i = 0; i < tb->group_cnt; i++) {
+			GroupData *cur_header = &(tb->group_header[i]);
+			tb->group_idx = i;
+			tmpcontext->ecxt_scantuple = outerslot;
+			//set hashtable->groupaggs to the agg_hash_entry
+			setGroupAggs(hashtable, mt_bind, cur_header->entry);
+
+			advance_vaggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
+			//advance_aggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
+		}
+
 		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
 	}
 
-	//Second, the function retrieves the aggregated tuples from the hash table and returns them.
 	if (GET_TOTAL_USED_SIZE(hashtable) > hashtable->mem_used)
 		hashtable->mem_used = GET_TOTAL_USED_SIZE(hashtable);
 
@@ -740,8 +790,9 @@ vagg_hash_initial_pass(AggState *aggstate)
 	return tuple_remaining;
 }
 
-Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow)
+Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
 {
+	int nrow = tb->nrow;
 	int64 newValue = DatumGetInt64(origValue);
 
 	for (int i=0;i<nrow;i++)
@@ -755,7 +806,24 @@ Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, int nr
 	return Int64GetDatum(newValue);
 }
 
-Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, int nrow)
+Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
 {
+	int nrow = tb->nrow;
 	return Int64GetDatum(DatumGetInt64(origValue) + nrow);
+}
+
+//group count
+Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+	int64 count = 0;
+	GroupData *cur_header = &(tb->group_header[tb->group_idx]);
+
+	int cur_idx = cur_header->idx;
+	//go through the current linklist and calculate the item count
+	while (cur_idx != -1) {
+		count++;
+		cur_idx = tb->idx_list[cur_idx];
+	}
+
+	return Int64GetDatum(DatumGetInt64(origValue) + count);
 }

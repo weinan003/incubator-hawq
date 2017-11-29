@@ -1,7 +1,7 @@
 #include "postgres.h"
 #include "tuple_batch.h"
 
-#define TUPLE_BATCH_ROW_MAX_SIZE	100000
+//#define TUPLE_BATCH_ROW_MAX_SIZE	100000
 
 TupleBatch createMaxTupleBatch(int ncol, TupleDesc tupdesc, bool *projs)
 {
@@ -30,6 +30,9 @@ TupleBatch createTupleBatch(int nrow, int ncol, TupleDesc tupdesc, bool *projs)
 	tb->tupDesc = tupdesc;
 	tb->rowSlot = MakeSingleTupleTableSlot(tb->tupDesc);
 	tb->rowIdx = -1;
+
+	tb->group_cnt = 0; //cnt is 0 indicates not a groupby agg
+	tb->group_idx = -1;
 
 	return tb;
 }
@@ -92,7 +95,7 @@ TupleTableSlot *getNextRowFromTupleBatch(TupleBatch tb, TupleDesc tupdesc)
 
 	Datum *values = slot_get_values(tb->rowSlot);
 	bool *nulls = slot_get_isnull(tb->rowSlot);	
-	ExecStoreAllNullTuple(tb->rowSlot);
+	//ExecStoreAllNullTuple(tb->rowSlot);
 
 	int i;
 	if (tb->nvalid > 0)
@@ -101,10 +104,10 @@ TupleTableSlot *getNextRowFromTupleBatch(TupleBatch tb, TupleDesc tupdesc)
 		for (i=0;i<tb->nvalid;i++)
 		{
 			values[i] = tb->columnDataArray[tb->vprojs[i]-1]->values[tb->rowIdx];
-			nulls[i] = false;
+			//nulls[i] = false;
 		}
 	
-		TupSetVirtualTupleNValid(tb->rowSlot, tb->nvalid);
+		//TupSetVirtualTupleNValid(tb->rowSlot, tb->nvalid);
 	}
 	else
 	{
@@ -113,11 +116,11 @@ TupleTableSlot *getNextRowFromTupleBatch(TupleBatch tb, TupleDesc tupdesc)
 			if (tb->projs[i])
 			{
 				values[i] = tb->columnDataArray[i]->values[tb->rowIdx];
-				nulls[i] = false;
+				//nulls[i] = false;
 			}
 		}
 
-		TupSetVirtualTupleNValid(tb->rowSlot, tb->ncol);
+		//TupSetVirtualTupleNValid(tb->rowSlot, tb->ncol);
 	}
 
 	return tb->rowSlot;	
