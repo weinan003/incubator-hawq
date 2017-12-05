@@ -659,12 +659,11 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	Datum newVal;
 
 	int projIdx = peraggstate->evalproj->pi_varNumbers[0]-1;
+	int columnIndex = projIdx;
 
-	int columnIndex = 0;
-	if (tb->group_cnt > 0)
+	if (tb->nvalid > 0)
 		columnIndex = tb->vprojs[projIdx] - 1;
-	else
-		columnIndex = tb->projs[projIdx] - 1;
+	//columnIndex = tb->projs[projIdx] - 1;
 
    	TupleColumnData *columnData = tb->columnDataArray[columnIndex];
 
