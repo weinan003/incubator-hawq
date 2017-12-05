@@ -24,7 +24,8 @@ static TupleTableSlot *VExecScan(TableScanState *node);
 /*
  * extern function
  */
-extern TupleTableSlot *agg_retrieve_hash_table(AggState *aggstate);
+//extern TupleTableSlot *agg_retrieve_hash_table(AggState *aggstate);
+static TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate);
 
 /*
  * vectorized function for agg
@@ -135,7 +136,7 @@ VExecAgg(AggState *node)
 		{
 			if (!node->hhashtable->is_spilling)
 			{
-				tuple = agg_retrieve_hash_table(node);
+				tuple = vagg_retrieve_hash_table(node);
 				node->agg_done = false; 
 				
 				if (tuple != NULL)
@@ -260,6 +261,115 @@ vagg_retrieve_scalar(AggState *aggstate)
 		 */
 		return ExecProject(aggstate->ss.ps.ps_ProjInfo, NULL);
 	}
+	return NULL;
+}
+
+/*
+ * ExecAgg for hashed case: retrieve groups from hash table
+ */
+TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate)
+{
+	ExprContext *econtext;
+	ProjectionInfo *projInfo;
+	Datum	   *aggvalues;
+	bool	   *aggnulls;
+	AggStatePerAgg peragg;
+	AggStatePerGroup pergroup;
+	TupleTableSlot *firstSlot;
+	Agg		   *node = (Agg *) aggstate->ss.ps.plan;
+	bool        input_has_grouping = node->inputHasGrouping;
+	bool        is_final_rollup_agg =
+		(node->lastAgg ||
+		 (input_has_grouping && node->numNullCols == 0));
+
+	/*
+	 * get state info from node
+	 */
+	/* econtext is the per-output-tuple expression context */
+	econtext = aggstate->ss.ps.ps_ExprContext;
+	aggvalues = econtext->ecxt_aggvalues;
+	aggnulls = econtext->ecxt_aggnulls;
+	projInfo = aggstate->ss.ps.ps_ProjInfo;
+	peragg = aggstate->peragg;
+
+	//TupleBatch tb = (TupleBatch)aggstate->ss.ss_ScanTupleSlot->PRIVATE_tts_data;
+	//firstSlot = tb->rowSlot;
+	firstSlot = aggstate->ss.ss_ScanTupleSlot;
+
+	if (aggstate->agg_done)
+		return NULL;
+
+	/*
+	 * We loop retrieving groups until we find one satisfying
+	 * aggstate->ss.ps.qual
+	 */
+	while (!aggstate->agg_done)
+	{
+		HashAggEntry *entry = agg_hash_iter(aggstate);
+			
+		if (entry == NULL)
+		{
+			aggstate->agg_done = TRUE;
+
+			return NULL;
+		}
+			
+		ResetExprContext(econtext);
+
+		/*
+		 * Store the copied first input tuple in the tuple table slot reserved
+		 * for it, so that it can be used in ExecProject.
+		 */
+		ExecStoreMemTuple((MemTuple)entry->tuple_and_aggs, firstSlot, false);
+		pergroup = (AggStatePerGroup)((char *)entry->tuple_and_aggs + 
+					      MAXALIGN(memtuple_get_size((MemTuple)entry->tuple_and_aggs,
+									 aggstate->hashslot->tts_mt_bind)));
+
+                /*
+                 * Finalize each aggregate calculation, and stash results in the
+                 * per-output-tuple context.
+                 */
+		finalize_vaggregates(aggstate, pergroup);
+
+		/*
+		 * Use the representative input tuple for any references to
+		 * non-aggregated input columns in the qual and tlist.
+		 */
+		econtext->ecxt_scantuple = firstSlot;
+
+		if (is_final_rollup_agg && input_has_grouping)
+		{
+			econtext->group_id =
+				get_grouping_groupid(econtext->ecxt_scantuple,
+									 node->grpColIdx[node->numCols-node->numNullCols-1]);
+			econtext->grouping =
+				get_grouping_groupid(econtext->ecxt_scantuple,
+									 node->grpColIdx[node->numCols-node->numNullCols-2]);
+		}
+		else
+		{
+			econtext->group_id = node->rollupGSTimes;
+			econtext->grouping = node->grouping;
+		}
+
+		/*
+		 * Check the qual (HAVING clause); if the group does not match, ignore
+		 * it and loop back to try to process another group.
+		 */
+		if (ExecQual(aggstate->ss.ps.qual, econtext, false))
+		{
+			/*
+			 * Form and return a projection tuple using the aggregate results
+			 * and the representative input tuple.	Note we do not support
+			 * aggregates returning sets ...
+			 */
+			Gpmon_M_Incr_Rows_Out(GpmonPktFromAggState(aggstate)); 
+			CheckSendPlanStateGpmonPkt(&aggstate->ss.ps);
+			return ExecProject(projInfo, NULL);
+		}
+	}
+
+	/* No more groups */
 	return NULL;
 }
 
