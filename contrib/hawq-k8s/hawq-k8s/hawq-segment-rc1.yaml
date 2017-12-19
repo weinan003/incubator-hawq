@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: hawq-segment1
+  labels:
+    name: hawq-segment1
+spec:
+  replicas: 1
+  selector:
+    name: hawq-segment1
+  template:
+    metadata:
+      labels:
+        name: hawq-segment1
+    spec:
+      containers:
+      - name: hawq-segment1
+        image: amyrazz44/hawq_segment
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+        #dnsPolicy: ClusterFirstWithHostNet
+        #volumeMounts:
+        #- name: nfs
+        #  mountPath: "/data/hawq"
+      #volumes:
+     # - name: nfs
+      #  server: 10.152.8.156
+       # path: "/home/gpadmin/hawq-data"
