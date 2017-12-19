@@ -1,4 +1,4 @@
-This folder contains docker images and k8s configuration file for hawq which enables hawq deployment on k8s.
+This folder contains docker images and k8s configuration file for hawq which support hawq deployment on k8s.
 
 # Build docker images
   # Hawq master docker image
@@ -33,5 +33,5 @@ This folder contains docker images and k8s configuration file for hawq which ena
   7. If you want to check the kubectl service.
      `kubectl get service`
 
-# There is file named exchange-hosts.py under the hawq-k8s folder which is to sync the hawq config file and etc hosts file between hawq cluster
-# in case hawq process crash or docker container restart. 
+**NOTE** There is file named exchange-hosts.py under the hawq-k8s folder which is to sync the hawq config file and etc hosts file between hawq cluster
+in case hawq process crash or docker container restart. 
