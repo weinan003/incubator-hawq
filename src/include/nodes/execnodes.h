@@ -759,11 +759,19 @@ typedef Datum (*ExprStateEvalFunc) (ExprState *expression,
 									bool *isNull,
 									ExprDoneCond *isDone);
 
+typedef Datum (*ExprBatchStateEvalFunc) (ExprState *expression,
+									ExprContext *econtext,
+									bool *isNull,
+									ExprDoneCond *isDone,
+									Datum *result);
+
 struct ExprState
 {
 	NodeTag				type;
 	Expr				*expr;			/* associated Expr node */
 	ExprStateEvalFunc	evalfunc;		/* routine to run to execute node */
+	//batch func
+	ExprBatchStateEvalFunc batch_evalfunc;
 };
 
 /* ----------------

@@ -774,10 +774,11 @@ ExecEvalScalarVar(ExprState *exprstate, ExprContext *econtext,
 
 	attnum = variable->varattno;
 
-	if (econtext->is_batch) {
+	//interma
+	if (econtext->is_batch && slot->PRIVATE_tts_data != NULL) {
 		TupleBatch tb = (TupleBatch)slot->PRIVATE_tts_data;
-		elog(LOG, "ExecEvalScalarVar, colIndex:%d", attnum);
-		dumpTupleBatch(slot);
+		//elog(NOTICE, "ExecEvalScalarVar, colIndex:%d", attnum);
+		//dumpTupleBatch(slot);
 		return 0;
 	}
 

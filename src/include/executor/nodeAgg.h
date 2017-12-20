@@ -218,4 +218,7 @@ static inline gpmon_packet_t * GpmonPktFromAggState(AggState *node)
 extern List *combineAggrefArgs(Aggref *aggref, List **sort_clauses);
 extern List *combinePercentileArgs(PercentileExpr *p);
 
+typedef ExprState * (*init_expr_func_type)(Expr *node, PlanState *parent);
+AggState * ExecInitAggWithHook(Agg *node, EState *estate, int eflags, init_expr_func_type init_expr_func);
+
 #endif   /* NODEAGG_H */

@@ -1848,6 +1848,12 @@ getAggType(Agg *node)
 }
 
 
+
+AggState *
+ExecInitAgg(Agg *node, EState *estate, int eflags) {
+	return ExecInitAggWithHook(node, estate, eflags, ExecInitExpr);
+}
+
 /* -----------------
  * ExecInitAgg
  *
@@ -1856,7 +1862,7 @@ getAggType(Agg *node)
  * -----------------
  */
 AggState *
-ExecInitAgg(Agg *node, EState *estate, int eflags)
+ExecInitAggWithHook(Agg *node, EState *estate, int eflags, init_expr_func_type init_expr_func)
 {
 	AggState   *aggstate;
 	AggStatePerAgg peragg;
@@ -1929,10 +1935,10 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 	 * particular order.
 	 */
 	aggstate->ss.ps.targetlist = (List *)
-		ExecInitExpr((Expr *) node->plan.targetlist,
+		(*init_expr_func)((Expr *) node->plan.targetlist,
 					 (PlanState *) aggstate);
 	aggstate->ss.ps.qual = (List *)
-		ExecInitExpr((Expr *) node->plan.qual,
+		(*init_expr_func)((Expr *) node->plan.qual,
 					 (PlanState *) aggstate);
 
     /* 

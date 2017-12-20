@@ -109,10 +109,11 @@ VExecScan(TableScanState *node)
 static AggState *
 VExecInitAgg(Agg *node, EState *estate, int eflags) {
 	elog(NOTICE, "call VExecInitAgg");
-	AggState * aggstate = ExecInitAgg(node, estate, eflags);
-	//aggstate->ss.ps.targetlist = (List *)
-	//	VExecInitExpr((Expr *) node->plan.targetlist, (PlanState *) aggstate);
+
+	AggState * aggstate = ExecInitAggWithHook(node, estate, eflags, VExecInitExpr);
+
 	return aggstate;
+
 }
 
 TupleTableSlot *
