@@ -153,6 +153,7 @@ static void ExecCdbTraceNode(PlanState *node, bool entry, TupleTableSlot *result
 #endif   /* CDB_TRACE_EXECUTOR */
 
 exec_agg_hook_type exec_agg_hook = NULL;
+init_agg_hook_type init_agg_hook = NULL;
 exec_scan_hook_type exec_scan_hook = NULL;
 
 
@@ -208,6 +209,55 @@ setSubplanSliceId(SubPlan *subplan, EState *estate)
 	}
 }
 
+static bool isValidVectorizedPlan(Plan *node)
+{
+	if (!vectorized_executor_enable)
+	{
+		return false;
+	}
+
+	if (nodeTag(node) != T_Agg)
+	{
+		return false;
+	}
+	Plan *outerPlan = outerPlan(node);
+	if (nodeTag(outerPlan) != T_ParquetScan)
+	{
+		return false;
+	}
+	/*
+	TableScan *ts = (TableScan *)outerPlan;
+	if (ts->ss.tableType != TableTypeParquet)
+	{
+		return false;
+	}
+	*/
+	return true;
+}
+
+static bool isValidVectorizedPlanState(PlanState *node)
+{
+	if (!vectorized_executor_enable)
+	{
+		return false;
+	}
+
+	if (nodeTag(node) != T_AggState)
+	{
+		return false;
+	}
+	PlanState *outerPlan = outerPlanState(node);
+	if (nodeTag(outerPlan) != T_TableScanState)
+	{
+		return false;
+	}
+	TableScanState *ts = (TableScanState *)outerPlan;
+	if (ts->ss.tableType != TableTypeParquet)
+	{
+		return false;
+	}
+	return true;
+}
 
 /* ------------------------------------------------------------------------
  *		ExecInitNode
@@ -561,8 +611,15 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 
 			START_MEMORY_ACCOUNT(curMemoryAccount);
 			{
-			result = (PlanState *) ExecInitAgg((Agg *) node,
-											   estate, eflags);
+
+				if (NULL != init_agg_hook && isValidVectorizedPlan(node)) {
+					result = (PlanState *) (*init_agg_hook)((Agg *) node,
+							   estate, eflags);
+				}
+				else {
+					result = (PlanState *) ExecInitAgg((Agg *) node,
+													   estate, eflags);
+				}
 			}
 			END_MEMORY_ACCOUNT();
 			break;
@@ -801,30 +858,8 @@ ExecSliceDependencyNode(PlanState *node)
 	ExecSliceDependencyNode(outerPlanState(node));
 	ExecSliceDependencyNode(innerPlanState(node));
 }
-   
-static bool isValidVectorizedPlan(PlanState *node)
-{
-	if (!vectorized_executor_enable)
-	{
-		return false;
-	}
 
-	if (nodeTag(node) != T_AggState)
-	{
-		return false;
-	} 
-	PlanState *outerPlan = outerPlanState(node);
-	if (nodeTag(outerPlan) != T_TableScanState)
-	{
-		return false;
-	}
-	TableScanState *ts = (TableScanState *)outerPlan;
-	if (ts->ss.tableType != TableTypeParquet) 
-	{
-		return false;
-	}
-	return true;
-}
+
  
 /* ----------------------------------------------------------------
  *		ExecProcNode
@@ -1009,7 +1044,7 @@ Exec_Jmp_Sort:
 	goto Exec_Jmp_Done;
 
 Exec_Jmp_Agg:
-	if (NULL != exec_agg_hook && isValidVectorizedPlan(node)) {
+	if (NULL != exec_agg_hook && isValidVectorizedPlanState(node)) {
 		result = (*exec_agg_hook)((AggState *) node);
 	} else {
 		result = ExecAgg((AggState *) node);

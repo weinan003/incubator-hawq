@@ -48,6 +48,9 @@ extern PGDLLIMPORT exec_agg_hook_type exec_agg_hook;
 typedef TupleTableSlot *(*exec_scan_hook_type) (TableScanState *node);
 extern PGDLLIMPORT exec_scan_hook_type exec_scan_hook;
 
+typedef AggState *(*init_agg_hook_type)(Agg *node, EState *estate, int eflags);
+extern PGDLLIMPORT init_agg_hook_type init_agg_hook;
+
 struct ChunkTransportState;             /* #include "cdb/cdbinterconnect.h" */
 
 /*

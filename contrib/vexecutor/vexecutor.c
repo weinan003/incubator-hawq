@@ -10,9 +10,13 @@
 #include "executor/nodeAgg.h"
 #include "../backend/executor/execHHashagg.c"
 
+#include "vexecQual.h"
+
+
 PG_MODULE_MAGIC;
 
 static exec_agg_hook_type PreviousExecAggHook = NULL;
+static init_agg_hook_type PreviousInitAggHook = NULL;
 static exec_scan_hook_type PreviousExecScanHook = NULL;
 
 /*
@@ -20,6 +24,7 @@ static exec_scan_hook_type PreviousExecScanHook = NULL;
  */
 static TupleTableSlot *VExecAgg(AggState *node);
 static TupleTableSlot *VExecScan(TableScanState *node);
+static AggState * VExecInitAgg(Agg *node, EState *estate, int eflags);
 
 /*
  * extern function
@@ -75,6 +80,9 @@ _PG_init(void)
 {
 	PreviousExecAggHook = exec_agg_hook;
 	exec_agg_hook = VExecAgg;
+
+	PreviousInitAggHook = init_agg_hook;
+	init_agg_hook = VExecInitAgg;
 	
 	//PreviousExecScanHook = exec_scan_hook;
 	//exec_scan_hook = VExecScan;
@@ -88,6 +96,7 @@ void
 _PG_fini(void)
 {
 	exec_agg_hook = PreviousExecAggHook;
+	init_agg_hook = PreviousInitAggHook;
 	//exec_scan_hook = PreviousExecScanHook;
 }
 
@@ -97,6 +106,14 @@ VExecScan(TableScanState *node)
 	return ExecParquetVScan(node);
 }
 
+static AggState *
+VExecInitAgg(Agg *node, EState *estate, int eflags) {
+	elog(NOTICE, "call VExecInitAgg");
+	AggState * aggstate = ExecInitAgg(node, estate, eflags);
+	//aggstate->ss.ps.targetlist = (List *)
+	//	VExecInitExpr((Expr *) node->plan.targetlist, (PlanState *) aggstate);
+	return aggstate;
+}
 
 TupleTableSlot *
 VExecAgg(AggState *node)
@@ -455,19 +472,6 @@ advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
         FuncCandidateList vectorTransitionFuncList = NULL;
         FunctionCallInfoData fcinfo;
 
-		//TupleColumnData *columnData = NULL; 
-        
-		/* simple check to handle count(*) */
-/*
-        int simpleColumnCount =  peraggstate->evalproj->pi_numSimpleVars;
-        if (simpleColumnCount >= 1)
-        {
-            int columnIndex = peraggstate->evalproj->pi_varNumbers[0]-1;
-            columnData = tb->columnDataArray[columnIndex];
-        }
-*/
-        //columnData = tb->columnDataArray[0];
-        
 
 		/*
          * If the user typed sum(), count(), or avg() instead of the vectorized
@@ -658,7 +662,11 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	MemoryContext oldContext;
 	Datum newVal;
 
-	int projIdx = peraggstate->evalproj->pi_varNumbers[0]-1;
+	int projIdx = 0;
+	if (peraggstate->evalproj->pi_isVarList)
+		projIdx = peraggstate->evalproj->pi_varNumbers[0]-1;  //core here
+	else
+		;//TODO what index?
 	int columnIndex = projIdx;
 
 	if (tb->nvalid > 0)
@@ -896,11 +904,21 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 		}
 
+		//do exec batch project, batch in tb
+		int	aggno;
+		tmpcontext->ecxt_scantuple = outerslot;
+		for (aggno = 0; aggno < aggstate->numaggs; aggno++)
+		{
+			AggStatePerAgg peraggstate = &aggstate->peragg[aggno];
+			VExecProject(peraggstate->evalproj, NULL);
+			//slot_getallattrs(slot);
+		}
+
 		//Second, call advance_aggregates in each agg group.
+		tmpcontext->ecxt_scantuple = outerslot;
 		for (int i = 0; i < tb->group_cnt; i++) {
 			GroupData *cur_header = &(tb->group_header[i]);
 			tb->group_idx = i;
-			tmpcontext->ecxt_scantuple = outerslot;
 
 			//set hashtable->groupaggs to the agg_hash_entry
 			setGroupAggs(hashtable, aggstate->hashslot->tts_mt_bind, cur_header->entry);
