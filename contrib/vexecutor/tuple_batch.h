@@ -36,7 +36,7 @@ typedef struct TupleBatchData {
 	int				rowIdx;
 
 	// for hash agg
-	GroupData 	group_header[BATCH_SIZE];	//group linklist header
+	GroupData 	group_header[BATCH_SIZE];	//group linklist header TODO use pointer
 	int 		group_idx;					//current group header index
 	int 		group_cnt;					//group header count
 

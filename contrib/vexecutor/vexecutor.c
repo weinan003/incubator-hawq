@@ -257,6 +257,15 @@ vagg_retrieve_scalar(AggState *aggstate)
 		//print_slot(outerslot);
 		//dumpTupleBatch(outerslot);
 
+		//TODO, add eval
+		tmpcontext->ecxt_scantuple = outerslot;
+		for (int aggno = 0; aggno < aggstate->numaggs; aggno++)
+		{
+			AggStatePerAgg peraggstate = &aggstate->peragg[aggno];
+			VExecProject(peraggstate->evalproj, NULL);
+			//slot_getallattrs(slot);
+		}
+
 		tmpcontext->ecxt_scantuple = outerslot;
 		advance_vaggregates(aggstate, pergroup, &(aggstate->mem_manager));
 	}
@@ -657,22 +666,29 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 		elog(ERROR, "no tuple batch during advance_vaggregates");	
 	}
 
-	TupleBatch tb = (TupleBatch)scantuple->PRIVATE_tts_data;
+	TupleBatch scan_tb = (TupleBatch)scantuple->PRIVATE_tts_data;
 
 	int	numArguments = peraggstate->numArguments;
 	MemoryContext oldContext;
 	Datum newVal;
 
 	int projIdx = 0;
-	if (peraggstate->evalproj->pi_isVarList)
-		projIdx = peraggstate->evalproj->pi_varNumbers[0]-1;  //core here
-	else
-		;//TODO what index?
-	int columnIndex = projIdx;
+	TupleBatch tb = NULL;
+	int columnIndex = 0;
+	if (peraggstate->evalproj->pi_isVarList) {
+		projIdx = peraggstate->evalproj->pi_varNumbers[0]-1;  //core here before
+		tb = (TupleBatch)scantuple->PRIVATE_tts_data;
 
-	if (tb->nvalid > 0)
-		columnIndex = tb->vprojs[projIdx] - 1;
-	//columnIndex = tb->projs[projIdx] - 1;
+		columnIndex = projIdx;
+		if (tb->nvalid > 0)
+			columnIndex = tb->vprojs[projIdx] - 1;
+	}
+	else {
+		//use the eval slot to get tb
+		projIdx = 0 ; //what index? suppose always 0 (peragg project 1 batch)
+		tb = (TupleBatch)peraggstate->evalslot->PRIVATE_tts_data;
+		columnIndex = projIdx;
+	}
 
    	TupleColumnData *columnData = tb->columnDataArray[columnIndex];
 
@@ -682,20 +698,20 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	if (strstr(funcName, "_sum") != NULL)
 	{
 		//sum
-		if (tb->group_cnt > 0)
+		if (scan_tb->group_cnt > 0)
 			//groupby
-			newVal = int4_sum_vec_group_internal(pergroupstate->transValue, columnData, tb);
+			newVal = int4_sum_vec_group_internal(pergroupstate->transValue, columnData, scan_tb);
 		else
-			newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, tb);
+			newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, scan_tb);
 	}
 	else
 	{
 		//count
-		if (tb->group_cnt > 0)
+		if (scan_tb->group_cnt > 0)
 			//groupby
-			newVal = int8inc_any_vec_group_internal(pergroupstate->transValue, columnData, tb);
+			newVal = int8inc_any_vec_group_internal(pergroupstate->transValue, columnData, scan_tb);
 		else
-			newVal = int8inc_any_vec_internal(pergroupstate->transValue, columnData, tb);
+			newVal = int8inc_any_vec_internal(pergroupstate->transValue, columnData, scan_tb);
 	}
 	
 	//elog(NOTICE, "colIdx:%d newValue after transition is %lld", columnIndex, DatumGetInt64(newVal));
@@ -906,9 +922,8 @@ vagg_hash_initial_pass(AggState *aggstate)
 		}
 
 		//do exec batch project, batch in tb
-		int	aggno;
 		tmpcontext->ecxt_scantuple = outerslot;
-		for (aggno = 0; aggno < aggstate->numaggs; aggno++)
+		for (int aggno = 0; aggno < aggstate->numaggs; aggno++)
 		{
 			AggStatePerAgg peraggstate = &aggstate->peragg[aggno];
 			VExecProject(peraggstate->evalproj, NULL);

@@ -89,7 +89,7 @@ typedef struct BatchFunctionCallInfoData
 	short		nargs;			/* # arguments actually passed */
 	Datum		*arg[FUNC_MAX_ARGS];		/* Arguments passed to function */
 	bool		*argnull[FUNC_MAX_ARGS]; /* T if arg[i] is actually NULL */
-	int 		*arg_batch_size[FUNC_MAX_ARGS];
+	int 		arg_batch_size[FUNC_MAX_ARGS];
 } BatchFunctionCallInfoData;
 
 

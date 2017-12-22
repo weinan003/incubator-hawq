@@ -761,7 +761,7 @@ typedef Datum (*ExprStateEvalFunc) (ExprState *expression,
 
 typedef Datum (*ExprBatchStateEvalFunc) (ExprState *expression,
 									ExprContext *econtext,
-									bool *isNull,
+									//bool *isNull,
 									ExprDoneCond *isDone,
 									Datum *result);
 

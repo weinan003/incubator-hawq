@@ -36,6 +36,26 @@
 #include "vexecQual.h"
 #include "tuple_batch.h"
 #include "debug.h"
+#include "vint.h"
+
+#define VExecEvalExpr(expr, econtext, isDone, result) \
+	((*(expr)->batch_evalfunc) (expr, econtext, isDone, result))
+
+/* batch eval function*/
+static Datum ExecBatchEvalOper(FuncExprState *fcache,
+			 ExprContext *econtext,
+			 ExprDoneCond *isDone,
+			 Datum *result
+			 );
+static Datum ExecBatchMakeFunctionResultNoSets(FuncExprState *fcache,
+							 ExprContext *econtext,
+							 ExprDoneCond *isDone,
+							 Datum *result
+);
+static Datum ExecBatchEvalConst(ExprState *exprstate, ExprContext *econtext,
+			  ExprDoneCond *isDone, Datum *result);
+static Datum ExecBatchEvalScalarVar(ExprState *exprstate, ExprContext *econtext,
+				  ExprDoneCond *isDone, Datum *result);
 
 /* static function decls */
 static Datum ExecEvalArrayRef(ArrayRefExprState *astate,
@@ -774,17 +794,50 @@ ExecEvalScalarVar(ExprState *exprstate, ExprContext *econtext,
 
 	attnum = variable->varattno;
 
-	//interma
-	if (econtext->is_batch && slot->PRIVATE_tts_data != NULL) {
-		TupleBatch tb = (TupleBatch)slot->PRIVATE_tts_data;
-		//elog(NOTICE, "ExecEvalScalarVar, colIndex:%d", attnum);
-		//dumpTupleBatch(slot);
-		return 0;
-	}
-
 	/* Fetch the value from the slot */
 	return slot_getattr(slot, attnum, isNull);
 }
+
+static Datum
+ExecBatchEvalScalarVar(ExprState *exprstate, ExprContext *econtext,
+				  ExprDoneCond *isDone, Datum *result)
+{
+	Var		   *variable = (Var *) exprstate->expr;
+	TupleTableSlot *slot;
+	AttrNumber	attnum;
+
+	if (isDone)
+		*isDone = ExprSingleResult;
+
+	/* Get the input slot and attribute number we want */
+	switch (variable->varno)
+	{
+		case INNER:				/* get the tuple from the inner node */
+			slot = econtext->ecxt_innertuple;
+			break;
+
+		case OUTER:				/* get the tuple from the outer node */
+			slot = econtext->ecxt_outertuple;
+			break;
+
+		default:				/* get the tuple from the relation being
+								 * scanned */
+			slot = econtext->ecxt_scantuple;
+			break;
+	}
+
+	attnum = variable->varattno;
+
+	TupleBatch tb = (TupleBatch)slot->PRIVATE_tts_data;
+	for (int i = 0; i<tb->nrow; i++) {
+		result[i] = tb->columnDataArray[attnum-1]->values[i];
+	}
+
+	return tb->nrow;
+	/* Fetch the value from the slot */
+	//return slot_getattr(slot, attnum, isNull);
+}
+
 
 /* ----------------------------------------------------------------
  *		ExecEvalWholeRowVar
@@ -911,6 +964,20 @@ ExecEvalConst(ExprState *exprstate, ExprContext *econtext,
 
 	*isNull = con->constisnull;
 	return con->constvalue;
+}
+
+static Datum
+ExecBatchEvalConst(ExprState *exprstate, ExprContext *econtext,
+			  ExprDoneCond *isDone, Datum *result)
+{
+	Const	   *con = (Const *) exprstate->expr;
+
+	if (isDone)
+		*isDone = ExprSingleResult;
+
+	//*isNull = con->constisnull;
+	result[0] = con->constvalue;
+	return 1;
 }
 
 /* ----------------------------------------------------------------
@@ -1824,6 +1891,86 @@ ExecMakeFunctionResultNoSets(FuncExprState *fcache,
 	return result;
 }
 
+static Datum
+ExecBatchMakeFunctionResultNoSets(FuncExprState *fcache,
+							 ExprContext *econtext,
+							 ExprDoneCond *isDone,
+							 Datum *result)
+{
+	ListCell   *arg;
+	//Datum		result;
+	BatchFunctionCallInfoData fcinfo;
+
+	//suppose two args
+	Datum arg0[BATCH_SIZE]; fcinfo.arg[0] = arg0;
+	Datum arg1[BATCH_SIZE]; fcinfo.arg[1] = arg1;
+
+	int	i;
+
+	/* Guard against stack overflow due to overly complex expressions */
+	check_stack_depth();
+
+	if (isDone)
+		*isDone = ExprSingleResult;
+
+	/* inlined, simplified version of ExecEvalFuncArgs */
+	i = 0;
+	foreach(arg, fcache->args)
+	{
+		if (i >= 2)
+			elog(ERROR, "can not support > 2 arg function in batch");
+		ExprState  *argstate = (ExprState *) lfirst(arg);
+
+		fcinfo.arg_batch_size[i] = VExecEvalExpr(argstate, econtext, NULL, fcinfo.arg[i]);
+		i++;
+	}
+
+	InitFunctionCallInfoData(fcinfo, &(fcache->func), i, NULL, NULL);
+
+	/*
+	 * If function is strict, and there are any NULL arguments, skip calling
+	 * the function and return NULL.
+	 */
+	if (fcache->func.fn_strict)
+	{
+		//skip all
+	}
+	/* fcinfo.isnull = false; */	/* handled by InitFunctionCallInfoData */
+
+	bool savedImmediateInterruptOK = ImmediateInterruptOK;
+	/* Allow "die" interrupt to be processed while waiting */
+	ImmediateInterruptOK = true;
+	InterruptWhenCallingPLUDF = true;
+
+	//int4pl 177
+	//int4mul 141
+
+	//result = FunctionCallInvoke(&fcinfo);
+	int batch_size = 0;
+    if (fcache->func.fn_oid == 177) {
+    	// fake data
+    	/*
+    	TupleTableSlot *scan_slot = econtext->ecxt_scantuple;
+    	TupleBatch scan_tb = (TupleBatch)scan_slot->PRIVATE_tts_data;
+
+    	for (int i=0;i < scan_tb->nrow; i++) {
+    		result[i] = 1;
+    	}
+    	return 0;
+    	*/
+    	batch_size = batch_int4pl(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+    }
+    else {
+    	elog(ERROR, "cannot support function %d", fcache->func.fn_oid);
+    }
+
+	InterruptWhenCallingPLUDF = false;
+	ImmediateInterruptOK = savedImmediateInterruptOK;
+
+	//*isNull = fcinfo.isnull;
+
+	return batch_size;
+}
 
 /*
  *		ExecMakeTableFunctionResult
@@ -2234,7 +2381,46 @@ ExecEvalOper(FuncExprState *fcache,
 	/* Go directly to ExecMakeFunctionResult on subsequent uses */
 	fcache->xprstate.evalfunc = (ExprStateEvalFunc) ExecMakeFunctionResult;
 
+
 	return ExecMakeFunctionResult(fcache, econtext, isNull, isDone);
+}
+
+static Datum
+ExecBatchEvalOper(FuncExprState *fcache,
+			 ExprContext *econtext,
+			 ExprDoneCond *isDone,
+			 Datum *result
+			 )
+{
+	/* This is called only the first time through */
+	OpExpr	   *op = (OpExpr *) fcache->xprstate.expr;
+
+	/* Initialize function lookup info */
+	init_fcache(op->opfuncid, fcache, econtext->ecxt_per_query_memory, true);
+
+	/* Go directly to ExecMakeFunctionResult on subsequent uses */
+	//fcache->xprstate.evalfunc = (ExprStateEvalFunc) ExecMakeFunctionResult;
+	fcache->xprstate.batch_evalfunc = (ExprBatchStateEvalFunc) ExecBatchMakeFunctionResultNoSets;
+
+	/*
+	if (fcache->func->fn_oid == 177) {
+		//177 (postgres`int4pl at int.c:692)
+		elog(NOTICE, "found function 177");
+	}
+	*/
+
+	return ExecBatchMakeFunctionResultNoSets(fcache, econtext, isDone, result);
+
+	// fake data
+	/*
+	TupleTableSlot *scan_slot = econtext->ecxt_scantuple;
+	TupleBatch scan_tb = (TupleBatch)scan_slot->PRIVATE_tts_data;
+
+	for (int i=0;i < scan_tb->nrow; i++) {
+		result[i] = 1;
+	}
+	return 0;
+	*/
 }
 
 /* ----------------------------------------------------------------
@@ -4505,10 +4691,12 @@ VExecInitExpr(Expr *node, PlanState *parent)
 		case T_Var:
 			state = (ExprState *) makeNode(ExprState);
 			state->evalfunc = ExecEvalVar;
+			state->batch_evalfunc = ExecBatchEvalScalarVar;
 			break;
 		case T_Const:
 			state = (ExprState *) makeNode(ExprState);
 			state->evalfunc = ExecEvalConst;
+			state->batch_evalfunc = ExecBatchEvalConst;
 			break;
 		case T_Param:
 			state = (ExprState *) makeNode(ExprState);
@@ -4661,6 +4849,7 @@ VExecInitExpr(Expr *node, PlanState *parent)
 				FuncExprState *fstate = makeNode(FuncExprState);
 
 				fstate->xprstate.evalfunc = (ExprStateEvalFunc) ExecEvalOper;
+				fstate->xprstate.batch_evalfunc = (ExprBatchStateEvalFunc) ExecBatchEvalOper;
 				fstate->args = (List *)
 					VExecInitExpr((Expr *) opexpr->args, parent);
 				fstate->func.fn_oid = InvalidOid;		/* not initialized */
@@ -5421,10 +5610,9 @@ ExecCleanTargetListLength(List *targetlist)
  * of *isDone = ExprEndResult signifies end of the set of tuple.
  */
 static bool
-ExecTargetList(List *targetlist,
+VExecTargetList(List *targetlist,
 			   ExprContext *econtext,
-			   Datum *values,
-			   bool *isnull,
+			   TupleTableSlot *slot,
 			   ExprDoneCond *itemIsDone,
 			   ExprDoneCond *isDone)
 {
@@ -5445,110 +5633,44 @@ ExecTargetList(List *targetlist,
 
 	haveDoneSets = false;		/* any exhausted set exprs in tlist? */
 
+	TupleTableSlot *scan_slot = econtext->ecxt_scantuple;
+	TupleBatch scan_tb = (TupleBatch)scan_slot->PRIVATE_tts_data;
+
 	foreach(tl, targetlist)
 	{
 		GenericExprState *gstate = (GenericExprState *) lfirst(tl);
 		TargetEntry *tle = (TargetEntry *) gstate->xprstate.expr;
 		AttrNumber	resind = tle->resno - 1;
 
+		/*
 		values[resind] = ExecEvalExpr(gstate->arg,
 									  econtext,
 									  &isnull[resind],
 									  &itemIsDone[resind]);
+		*/
+
+		TupleBatch result_tb = (TupleBatch)slot->PRIVATE_tts_data;
+		int columnIndex = 0; //always is 0
+	   	TupleColumnData *columnData = result_tb->columnDataArray[columnIndex];
+
+	   	result_tb->nrow = VExecEvalExpr(gstate->arg, econtext, &itemIsDone[resind], columnData->values);
+
+		// fake data
+	   	/*
+		for (int i=0;i < scan_tb->nrow; i++) {
+	   		columnData->values[i] = 1;
+	   	}
+		*/
 
 		if (itemIsDone[resind] != ExprSingleResult)
 		{
-			/* We have a set-valued expression in the tlist */
-			if (isDone == NULL)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("set-valued function called in context that cannot accept a set")));
-			if (itemIsDone[resind] == ExprMultipleResult)
-			{
-				/* we have undone sets in the tlist, set flag */
-				*isDone = ExprMultipleResult;
-			}
-			else
-			{
-				/* we have done sets in the tlist, set flag for that */
-				haveDoneSets = true;
-			}
+			//skip all
 		}
 	}
 
 	if (haveDoneSets)
 	{
-		/*
-		 * note: can't get here unless we verified isDone != NULL
-		 */
-		if (*isDone == ExprSingleResult)
-		{
-			/*
-			 * all sets are done, so report that tlist expansion is complete.
-			 */
-			*isDone = ExprEndResult;
-			MemoryContextSwitchTo(oldContext);
-			return false;
-		}
-		else
-		{
-			/*
-			 * We have some done and some undone sets.	Restart the done ones
-			 * so that we can deliver a tuple (if possible).
-			 */
-			foreach(tl, targetlist)
-			{
-				GenericExprState *gstate = (GenericExprState *) lfirst(tl);
-				TargetEntry *tle = (TargetEntry *) gstate->xprstate.expr;
-				AttrNumber	resind = tle->resno - 1;
-
-				if (itemIsDone[resind] == ExprEndResult)
-				{
-					values[resind] = ExecEvalExpr(gstate->arg,
-												  econtext,
-												  &isnull[resind],
-												  &itemIsDone[resind]);
-
-					if (itemIsDone[resind] == ExprEndResult)
-					{
-						/*
-						 * Oh dear, this item is returning an empty set. Guess
-						 * we can't make a tuple after all.
-						 */
-						*isDone = ExprEndResult;
-						break;
-					}
-				}
-			}
-
-			/*
-			 * If we cannot make a tuple because some sets are empty, we still
-			 * have to cycle the nonempty sets to completion, else resources
-			 * will not be released from subplans etc.
-			 *
-			 * XXX is that still necessary?
-			 */
-			if (*isDone == ExprEndResult)
-			{
-				foreach(tl, targetlist)
-				{
-					GenericExprState *gstate = (GenericExprState *) lfirst(tl);
-					TargetEntry *tle = (TargetEntry *) gstate->xprstate.expr;
-					AttrNumber	resind = tle->resno - 1;
-
-					while (itemIsDone[resind] == ExprMultipleResult)
-					{
-						values[resind] = ExecEvalExpr(gstate->arg,
-													  econtext,
-													  &isnull[resind],
-													  &itemIsDone[resind]);
-					}
-				}
-
-				MemoryContextSwitchTo(oldContext);
-				return false;
-			}
-		}
+		//skip all
 	}
 
 	/* Report success */
@@ -5622,8 +5744,14 @@ VExecProject(ProjectionInfo *projInfo, ExprDoneCond *isDone)
 	 */
 	ExecClearTuple(slot); 
 
+	//allocate the space for tb
+	//TODO: allocate once
+	bool projs = true;
+	//suppose only 1 col and desc is not changed
+	slot->PRIVATE_tts_data = createTupleBatch(BATCH_SIZE, 1, slot->tts_tupleDescriptor, &projs);
+
 	//set batch flag
-	projInfo->pi_exprContext->is_batch = true;
+	//projInfo->pi_exprContext->is_batch = true;
 
 	/*
 	 * form a new result tuple (if possible); if successful, mark the result
@@ -5640,10 +5768,9 @@ VExecProject(ProjectionInfo *projInfo, ExprDoneCond *isDone)
 	}
 	else
 	{
-		if (ExecTargetList(projInfo->pi_targetlist,
+		if (VExecTargetList(projInfo->pi_targetlist,
 						   projInfo->pi_exprContext,
-						   slot_get_values(slot),
-						   slot_get_isnull(slot),
+						   slot,
 						   (ExprDoneCond *) projInfo->pi_itemIsDone,
 						   isDone))
 			ExecStoreVirtualTuple(slot);
