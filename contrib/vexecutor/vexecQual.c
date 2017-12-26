@@ -798,7 +798,7 @@ ExecEvalScalarVar(ExprState *exprstate, ExprContext *econtext,
 	return slot_getattr(slot, attnum, isNull);
 }
 
-static Datum
+Datum
 ExecBatchEvalScalarVar(ExprState *exprstate, ExprContext *econtext,
 				  ExprDoneCond *isDone, Datum *result)
 {
@@ -826,11 +826,14 @@ ExecBatchEvalScalarVar(ExprState *exprstate, ExprContext *econtext,
 			break;
 	}
 
-	attnum = variable->varattno;
+	attnum = variable->varattno - 1;
 
 	TupleBatch tb = (TupleBatch)slot->PRIVATE_tts_data;
+	if (tb->nvalid > 0)
+		attnum = tb->vprojs[attnum] - 1;
+
 	for (int i = 0; i<tb->nrow; i++) {
-		result[i] = tb->columnDataArray[attnum-1]->values[i];
+		result[i] = tb->columnDataArray[attnum]->values[i];
 	}
 
 	return tb->nrow;
@@ -966,7 +969,7 @@ ExecEvalConst(ExprState *exprstate, ExprContext *econtext,
 	return con->constvalue;
 }
 
-static Datum
+Datum
 ExecBatchEvalConst(ExprState *exprstate, ExprContext *econtext,
 			  ExprDoneCond *isDone, Datum *result)
 {
@@ -1891,7 +1894,7 @@ ExecMakeFunctionResultNoSets(FuncExprState *fcache,
 	return result;
 }
 
-static Datum
+Datum
 ExecBatchMakeFunctionResultNoSets(FuncExprState *fcache,
 							 ExprContext *econtext,
 							 ExprDoneCond *isDone,
