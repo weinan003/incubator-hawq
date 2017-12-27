@@ -5748,13 +5748,10 @@ VExecProject(ProjectionInfo *projInfo, ExprDoneCond *isDone)
 	ExecClearTuple(slot); 
 
 	//allocate the space for tb
-	//TODO: allocate once
 	bool projs = true;
 	//suppose only 1 col and desc is not changed
+	//TODO: allocate once
 	slot->PRIVATE_tts_data = createTupleBatch(BATCH_SIZE, 1, slot->tts_tupleDescriptor, &projs);
-
-	//set batch flag
-	//projInfo->pi_exprContext->is_batch = true;
 
 	/*
 	 * form a new result tuple (if possible); if successful, mark the result

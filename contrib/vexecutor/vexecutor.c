@@ -9,21 +9,36 @@
 #include "executor/execHHashagg.h"
 #include "executor/nodeAgg.h"
 #include "../backend/executor/execHHashagg.c"
-
 #include "vexecQual.h"
-
 
 PG_MODULE_MAGIC;
 
+//batch hashagg group linklist header
+typedef struct GroupData {
+	HashAggEntry *entry;	// pointer to agg_hash_entry
+	int idx; 				// pointer to idx_list
+} GroupData;
+
+//batch hashagg group data
+struct BatchAggGroupData{
+	GroupData 	group_header[BATCH_SIZE];	//group linklist header
+	int 		group_idx;					//current group header index
+	int 		group_cnt;					//group header count
+
+	//linklist elements
+	//each item's index is the index to columnData
+	//each item's value is the next pointer, -1 is the end of a linklist
+	int 		idx_list[BATCH_SIZE];
+};
+
+
 static exec_agg_hook_type PreviousExecAggHook = NULL;
 static init_agg_hook_type PreviousInitAggHook = NULL;
-static exec_scan_hook_type PreviousExecScanHook = NULL;
 
 /*
  * hook function
  */
 static TupleTableSlot *VExecAgg(AggState *node);
-static TupleTableSlot *VExecScan(TableScanState *node);
 static AggState * VExecInitAgg(Agg *node, EState *estate, int eflags);
 
 /*
@@ -39,24 +54,24 @@ static TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate);
 static TupleTableSlot *vagg_retrieve_direct(AggState *aggstate);
 static TupleTableSlot *vagg_retrieve_scalar(AggState *aggstate);
 static void initialize_vaggregates(AggState *aggstate,
-									AggStatePerAgg peragg,
-									AggStatePerGroup pergroup,
-									MemoryManagerContainer *mem_manager);
+	AggStatePerAgg peragg,
+	AggStatePerGroup pergroup,
+	MemoryManagerContainer *mem_manager);
 
-static void advance_vaggregates(AggState *aggstate, 
-									AggStatePerGroup pergroup,
-									MemoryManagerContainer *mem_manager);
+static void advance_vaggregates(AggState *aggstate,
+	AggStatePerGroup pergroup,
+	MemoryManagerContainer *mem_manager);
 static void advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
-									AggStatePerGroup pergroupstate, 
-									FunctionCallInfoData *fcinfo,
-									const char *funcName);
+	AggStatePerGroup pergroupstate,
+	FunctionCallInfoData *fcinfo,
+	const char *funcName);
 
 static void finalize_vaggregates(AggState *aggstate, AggStatePerGroup pergroup);
 static void finalize_vaggregate(AggState *aggstate,
-									AggStatePerAgg peraggstate,
-									AggStatePerGroup pergroupstate,
-									Datum *resultVal, 
-									bool *resultIsNull);
+	AggStatePerAgg peraggstate,
+	AggStatePerGroup pergroupstate,
+	Datum *resultVal,
+	bool *resultIsNull);
 
 // ExecAgg for hashed case.
 static bool vagg_hash_initial_pass(AggState *aggstate);
@@ -75,7 +90,7 @@ static Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *co
  * previous utility hook, and then install our hook to pre-intercept calls to
  * the copy command.
  */
-void 
+void
 _PG_init(void)
 {
 	PreviousExecAggHook = exec_agg_hook;
@@ -83,27 +98,18 @@ _PG_init(void)
 
 	PreviousInitAggHook = init_agg_hook;
 	init_agg_hook = VExecInitAgg;
-	
-	//PreviousExecScanHook = exec_scan_hook;
-	//exec_scan_hook = VExecScan;
 }
 
 /*
  * _PG_fini is called when the module is unloaded. This function uninstalls the
  * extension's hooks.
  */
-void 
+void
 _PG_fini(void)
 {
 	exec_agg_hook = PreviousExecAggHook;
 	init_agg_hook = PreviousInitAggHook;
 	//exec_scan_hook = PreviousExecScanHook;
-}
-
-TupleTableSlot *
-VExecScan(TableScanState *node)
-{
-	return ExecParquetVScan(node);
 }
 
 static AggState *
@@ -131,14 +137,14 @@ VExecAgg(AggState *node)
 	{
 		TupleTableSlot *tuple = NULL;
 		bool streaming = ((Agg *) node->ss.ps.plan)->streaming;
-	
+
 		if (node->hhashtable == NULL)
 		{
 			bool tupremain;
-			
+
 			node->hhashtable = create_agg_hash_table(node);
 			tupremain = vagg_hash_initial_pass(node);
-			
+
 			if ( streaming )
 			{
 				if ( tupremain )
@@ -149,42 +155,42 @@ VExecAgg(AggState *node)
 			else
 				node->hhashtable->state = HASHAGG_BETWEEN_PASSES;
 		}
-		
+
 		for (;;)
 		{
 			if (!node->hhashtable->is_spilling)
 			{
 				tuple = vagg_retrieve_hash_table(node);
-				node->agg_done = false; 
-				
+				node->agg_done = false;
+
 				if (tuple != NULL)
 					return tuple;
 			}
-		
+
 			switch (node->hhashtable->state)
 			{
-				case HASHAGG_BETWEEN_PASSES:
-					Assert(!streaming);
-					if (agg_hash_next_pass(node))
-					{
-						node->hhashtable->state = HASHAGG_BETWEEN_PASSES;
-						continue;
-					}
-					node->hhashtable->state = HASHAGG_END_OF_PASSES;
-				case HASHAGG_END_OF_PASSES:
-					node->agg_done = true;
-					ExecEagerFreeAgg(node);
-					return NULL;
-
-				case HASHAGG_STREAMING:
-					Assert(streaming);
-					if ( !agg_hash_stream(node) )
-						node->hhashtable->state = HASHAGG_END_OF_PASSES;
+			case HASHAGG_BETWEEN_PASSES:
+				Assert(!streaming);
+				if (agg_hash_next_pass(node))
+				{
+					node->hhashtable->state = HASHAGG_BETWEEN_PASSES;
 					continue;
+				}
+				node->hhashtable->state = HASHAGG_END_OF_PASSES;
+			case HASHAGG_END_OF_PASSES:
+				node->agg_done = true;
+				ExecEagerFreeAgg(node);
+				return NULL;
 
-				case HASHAGG_BEFORE_FIRST_PASS:
-				default:
-					elog(ERROR,"hybrid hash aggregation sequencing error");
+			case HASHAGG_STREAMING:
+				Assert(streaming);
+				if ( !agg_hash_stream(node) )
+					node->hhashtable->state = HASHAGG_END_OF_PASSES;
+				continue;
+
+			case HASHAGG_BEFORE_FIRST_PASS:
+			default:
+				elog(ERROR,"hybrid hash aggregation sequencing error");
 			}
 		}
 	}
@@ -209,14 +215,14 @@ vagg_retrieve_direct(AggState *aggstate)
 
 	switch(aggstate->aggType)
 	{
-		case AggTypeScalar:
-			return vagg_retrieve_scalar(aggstate);
+	case AggTypeScalar:
+		return vagg_retrieve_scalar(aggstate);
 
-		case AggTypeGroup:
-		case AggTypeIntermediateRollup:
-		case AggTypeFinalRollup:
-		default:
-			insist_log(false, "invalid Agg node: type %d", aggstate->aggType);
+	case AggTypeGroup:
+	case AggTypeIntermediateRollup:
+	case AggTypeFinalRollup:
+	default:
+		insist_log(false, "invalid Agg node: type %d", aggstate->aggType);
 	}
 	return NULL;
 }
@@ -226,7 +232,7 @@ TupleTableSlot *
 vagg_retrieve_scalar(AggState *aggstate)
 {
 	AggStatePerAgg peragg = aggstate->peragg;
-   	AggStatePerGroup pergroup = aggstate->pergroup ;
+	AggStatePerGroup pergroup = aggstate->pergroup ;
 
 	initialize_vaggregates(aggstate, peragg, pergroup, &(aggstate->mem_manager));
 
@@ -235,13 +241,13 @@ vagg_retrieve_scalar(AggState *aggstate)
 	 */
 	int rcounter = 0;
 	while (!aggstate->agg_done)
-   	{
+	{
 		ExprContext *tmpcontext = aggstate->tmpcontext;
 		/* Reset the per-input-tuple context */
 		ResetExprContext(tmpcontext);
 		PlanState *outerPlan = outerPlanState(aggstate);
 		TupleTableSlot *outerslot = ExecParquetVScan((TableScanState *)outerPlan);
-			
+
 		if (TupIsNull(outerslot))
 		{
 			aggstate->agg_done = true;
@@ -252,12 +258,7 @@ vagg_retrieve_scalar(AggState *aggstate)
 
 		TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
 		rcounter += tb->nrow;
-		//elog(NOTICE, "row count is :%d", rcounter);	
-	
-		//print_slot(outerslot);
-		//dumpTupleBatch(outerslot);
 
-		//TODO, add eval
 		tmpcontext->ecxt_scantuple = outerslot;
 		for (int aggno = 0; aggno < aggstate->numaggs; aggno++)
 		{
@@ -319,8 +320,6 @@ TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate)
 	projInfo = aggstate->ss.ps.ps_ProjInfo;
 	peragg = aggstate->peragg;
 
-	//TupleBatch tb = (TupleBatch)aggstate->ss.ss_ScanTupleSlot->PRIVATE_tts_data;
-	//firstSlot = tb->rowSlot;
 	firstSlot = aggstate->ss.ss_ScanTupleSlot;
 
 	if (aggstate->agg_done)
@@ -333,14 +332,14 @@ TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate)
 	while (!aggstate->agg_done)
 	{
 		HashAggEntry *entry = agg_hash_iter(aggstate);
-			
+
 		if (entry == NULL)
 		{
 			aggstate->agg_done = TRUE;
 
 			return NULL;
 		}
-			
+
 		ResetExprContext(econtext);
 
 		/*
@@ -348,14 +347,14 @@ TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate)
 		 * for it, so that it can be used in ExecProject.
 		 */
 		ExecStoreMemTuple((MemTuple)entry->tuple_and_aggs, firstSlot, false);
-		pergroup = (AggStatePerGroup)((char *)entry->tuple_and_aggs + 
-					      MAXALIGN(memtuple_get_size((MemTuple)entry->tuple_and_aggs,
-									 aggstate->hashslot->tts_mt_bind)));
+		pergroup = (AggStatePerGroup)((char *)entry->tuple_and_aggs +
+			MAXALIGN(memtuple_get_size((MemTuple)entry->tuple_and_aggs,
+					aggstate->hashslot->tts_mt_bind)));
 
-                /*
-                 * Finalize each aggregate calculation, and stash results in the
-                 * per-output-tuple context.
-                 */
+		/*
+		 * Finalize each aggregate calculation, and stash results in the
+		 * per-output-tuple context.
+		 */
 		finalize_vaggregates(aggstate, pergroup);
 
 		/*
@@ -368,10 +367,10 @@ TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate)
 		{
 			econtext->group_id =
 				get_grouping_groupid(econtext->ecxt_scantuple,
-									 node->grpColIdx[node->numCols-node->numNullCols-1]);
+					node->grpColIdx[node->numCols-node->numNullCols-1]);
 			econtext->grouping =
 				get_grouping_groupid(econtext->ecxt_scantuple,
-									 node->grpColIdx[node->numCols-node->numNullCols-2]);
+					node->grpColIdx[node->numCols-node->numNullCols-2]);
 		}
 		else
 		{
@@ -390,7 +389,7 @@ TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate)
 			 * and the representative input tuple.	Note we do not support
 			 * aggregates returning sets ...
 			 */
-			Gpmon_M_Incr_Rows_Out(GpmonPktFromAggState(aggstate)); 
+			Gpmon_M_Incr_Rows_Out(GpmonPktFromAggState(aggstate));
 			CheckSendPlanStateGpmonPkt(&aggstate->ss.ps);
 			return ExecProject(projInfo, NULL);
 		}
@@ -409,9 +408,9 @@ TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate)
  */
 void
 initialize_vaggregates(AggState *aggstate,
-                      AggStatePerAgg peragg,
-                      AggStatePerGroup pergroup,
-                      MemoryManagerContainer *mem_manager)
+	AggStatePerAgg peragg,
+	AggStatePerGroup pergroup,
+	MemoryManagerContainer *mem_manager)
 {
 	int aggno;
 
@@ -432,10 +431,10 @@ initialize_vaggregates(AggState *aggstate,
 		else
 		{
 			pergroupstate->transValue = datumCopyWithMemManager(0,
-										peraggstate->initValue,
-										peraggstate->transtypeByVal,
-										peraggstate->transtypeLen,
-										mem_manager);
+				peraggstate->initValue,
+				peraggstate->transtypeByVal,
+				peraggstate->transtypeLen,
+				mem_manager);
 		}
 		pergroupstate->transValueIsNull = peraggstate->initValueIsNull;
 		pergroupstate->noTransValue = peraggstate->initValueIsNull;
@@ -452,114 +451,51 @@ initialize_vaggregates(AggState *aggstate,
  */
 void
 advance_vaggregates(AggState *aggstate, AggStatePerGroup pergroup,
-                   MemoryManagerContainer *mem_manager)
+	MemoryManagerContainer *mem_manager)
 {
 	int			aggno;
 	ExprContext *tmpcontext = aggstate->tmpcontext;
 	TupleTableSlot *scantuple = tmpcontext->ecxt_scantuple;
 	if (scantuple == NULL || scantuple->PRIVATE_tts_data == NULL)
 	{
-		elog(ERROR, "no tuple batch during advance_vaggregates");	
+		elog(ERROR, "no tuple batch during advance_vaggregates");
 	}
-
-	TupleBatch tb = (TupleBatch)scantuple->PRIVATE_tts_data;
 
 	for (aggno = 0; aggno < aggstate->numaggs; aggno++)
 	{
-		Datum value;
-		bool isnull;
 		AggStatePerAgg peraggstate = &aggstate->peragg[aggno];
 		AggStatePerGroup pergroupstate = &pergroup[aggno];
 		int32 argumentCount = peraggstate->numArguments + 1;
-		//Aggref	   *aggref = peraggstate->aggref;
-		//PercentileExpr *perc = peraggstate->perc;
-		//int			i;
-		TupleTableSlot *slot;
-		//int nargs;
-        char *transitionFuncName = NULL;
-        char vectorTransitionFuncName[NAMEDATALEN];
-        List *qualVectorTransitionFuncName = NIL;
-        FuncCandidateList vectorTransitionFuncList = NULL;
-        FunctionCallInfoData fcinfo;
-
+		char *transitionFuncName = NULL;
+		char vectorTransitionFuncName[NAMEDATALEN];
+		List *qualVectorTransitionFuncName = NIL;
+		FuncCandidateList vectorTransitionFuncList = NULL;
+		FunctionCallInfoData fcinfo;
 
 		/*
-         * If the user typed sum(), count(), or avg() instead of the vectorized
-         * aggregate names, manually map to the vectorized version here. This is
-         * merely syntactic sugar. Note that we rely on a naming convention here,
-         * where vectorized function names are regular function names with _vec
-         * appended to them.
-         */
-        transitionFuncName = get_func_name(peraggstate->transfn_oid);
-        snprintf(vectorTransitionFuncName, NAMEDATALEN, "%s_vec", transitionFuncName);
+		 * If the user typed sum(), count(), or avg() instead of the vectorized
+		 * aggregate names, manually map to the vectorized version here. This is
+		 * merely syntactic sugar. Note that we rely on a naming convention here,
+		 * where vectorized function names are regular function names with _vec
+		 * appended to them.
+		 */
+		transitionFuncName = get_func_name(peraggstate->transfn_oid);
+		snprintf(vectorTransitionFuncName, NAMEDATALEN, "%s_vec", transitionFuncName);
 
-        qualVectorTransitionFuncName =
-            stringToQualifiedNameList(vectorTransitionFuncName, "");
-        vectorTransitionFuncList = FuncnameGetCandidates(qualVectorTransitionFuncName, argumentCount);
+		qualVectorTransitionFuncName =
+			stringToQualifiedNameList(vectorTransitionFuncName, "");
+		vectorTransitionFuncList = FuncnameGetCandidates(qualVectorTransitionFuncName, argumentCount);
 
-        Oid functionOid = 0;
-        if (vectorTransitionFuncList != NULL)
-        {
-            functionOid = vectorTransitionFuncList->oid;
-            fmgr_info(functionOid, &peraggstate->transfn);
-        }
-
-        //transitionFuncName:int4_sum vectorTransitionFuncName:int4_sum_vec functionOid:0
-        /*
-		elog(LOG, "transitionFuncName:%s vectorTransitionFuncName:%s functionOid:%d",
-						transitionFuncName,
-						vectorTransitionFuncName,
-						functionOid);
-        fcinfo.arg[1] = PointerGetDatum(columnData);
-        fcinfo.arg[2] = Int32GetDatum(tb->nrow);
-*/
-
-		advance_vtransition_function(aggstate, peraggstate, pergroupstate, &fcinfo, transitionFuncName);
-										//&fcinfo, mem_manager);
-
-		/*
-		if (aggref)
-			nargs = list_length(aggref->args);
-		else
+		Oid functionOid = 0;
+		if (vectorTransitionFuncList != NULL)
 		{
-			Assert (perc);
-			nargs = list_length(perc->args);
+			functionOid = vectorTransitionFuncList->oid;
+			fmgr_info(functionOid, &peraggstate->transfn);
 		}
 
-		slot = ExecProject(peraggstate->evalproj, NULL);
-		slot_getallattrs(slot);	
-		
-		if (peraggstate->numSortCols > 0)
-		{
-		}
-		else
-		{
-			FunctionCallInfoData fcinfo;
-			
-			Assert(slot->PRIVATE_tts_nvalid >= nargs);
-			if (aggref)
-			{
-				for (i = 0; i < nargs; i++)
-				{
-					fcinfo.arg[i + 1] = slot_getattr(slot, i+1, &isnull);
-					fcinfo.argnull[i + 1] = isnull;
-				}
+		advance_vtransition_function(aggstate, peraggstate, pergroupstate,
+			&fcinfo, transitionFuncName);
 
-			}
-			else
-			{
-				int		natts;
-
-				Assert(perc);
-				natts = slot->tts_tupleDescriptor->natts;
-				for (i = 0; i < natts; i++)
-				{
-					fcinfo.arg[i + 1] = slot_getattr(slot, i + 1, &isnull);
-					fcinfo.argnull[i + 1] = isnull;
-				}
-			}
-		}
-		*/
 	} /* aggno loop */
 
 }
@@ -585,7 +521,7 @@ finalize_vaggregates(AggState *aggstate, AggStatePerGroup pergroup)
 			// TODO
 		}
 		finalize_vaggregate(aggstate, peraggstate, pergroupstate,
-  								&aggvalues[aggno], &aggnulls[aggno]);
+			&aggvalues[aggno], &aggnulls[aggno]);
 	}
 }
 
@@ -597,9 +533,9 @@ finalize_vaggregates(AggState *aggstate, AggStatePerGroup pergroup)
  */
 void
 finalize_vaggregate(AggState *aggstate,
-				   AggStatePerAgg peraggstate,
-				   AggStatePerGroup pergroupstate,
-				   Datum *resultVal, bool *resultIsNull)
+	AggStatePerAgg peraggstate,
+	AggStatePerGroup pergroupstate,
+	Datum *resultVal, bool *resultIsNull)
 {
 	MemoryContext oldContext;
 
@@ -613,7 +549,7 @@ finalize_vaggregate(AggState *aggstate,
 		FunctionCallInfoData fcinfo;
 
 		InitFunctionCallInfoData(fcinfo, &(peraggstate->finalfn), 1,
-								 (void *) aggstate, NULL);
+			(void *) aggstate, NULL);
 		fcinfo.arg[0] = pergroupstate->transValue;
 		fcinfo.argnull[0] = pergroupstate->transValueIsNull;
 		if (fcinfo.flinfo->fn_strict && pergroupstate->transValueIsNull)
@@ -640,10 +576,10 @@ finalize_vaggregate(AggState *aggstate,
 	 */
 	if (!peraggstate->resulttypeByVal && !*resultIsNull &&
 		!MemoryContextContainsGenericAllocation(CurrentMemoryContext,
-							   DatumGetPointer(*resultVal)))
+			DatumGetPointer(*resultVal)))
 		*resultVal = datumCopy(*resultVal,
-							   peraggstate->resulttypeByVal,
-							   peraggstate->resulttypeLen);
+			peraggstate->resulttypeByVal,
+			peraggstate->resulttypeLen);
 
 	MemoryContextSwitchTo(oldContext);
 }
@@ -655,20 +591,19 @@ finalize_vaggregate(AggState *aggstate,
  */
 void
 advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
-									   AggStatePerGroup pergroupstate, 
-									   FunctionCallInfoData *fcinfo,
-										const char *funcName)
+	AggStatePerGroup pergroupstate,
+	FunctionCallInfoData *fcinfo,
+	const char *funcName)
 {
 	ExprContext *tmpcontext = aggstate->tmpcontext;
 	TupleTableSlot *scantuple = tmpcontext->ecxt_scantuple;
 	if (scantuple == NULL || scantuple->PRIVATE_tts_data == NULL)
 	{
-		elog(ERROR, "no tuple batch during advance_vaggregates");	
+		elog(ERROR, "no tuple batch during advance_vaggregates");
 	}
 
 	TupleBatch scan_tb = (TupleBatch)scantuple->PRIVATE_tts_data;
 
-	int	numArguments = peraggstate->numArguments;
 	MemoryContext oldContext;
 	Datum newVal;
 
@@ -690,7 +625,7 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 		columnIndex = projIdx;
 	}
 
-   	TupleColumnData *columnData = tb->columnDataArray[columnIndex];
+	TupleColumnData *columnData = tb->columnDataArray[columnIndex];
 
 	/* we run the transition functions in per-input-tuple memory context */
 	oldContext = MemoryContextSwitchTo(aggstate->tmpcontext->ecxt_per_tuple_memory);
@@ -698,7 +633,7 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	if (strstr(funcName, "_sum") != NULL)
 	{
 		//sum
-		if (scan_tb->group_cnt > 0)
+		if (scan_tb->agg_groupdata->group_cnt > 0)
 			//groupby
 			newVal = int4_sum_vec_group_internal(pergroupstate->transValue, columnData, scan_tb);
 		else
@@ -707,28 +642,12 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	else
 	{
 		//count
-		if (scan_tb->group_cnt > 0)
+		if (scan_tb->agg_groupdata->group_cnt > 0)
 			//groupby
 			newVal = int8inc_any_vec_group_internal(pergroupstate->transValue, columnData, scan_tb);
 		else
 			newVal = int8inc_any_vec_internal(pergroupstate->transValue, columnData, scan_tb);
 	}
-	
-	//elog(NOTICE, "colIdx:%d newValue after transition is %lld", columnIndex, DatumGetInt64(newVal));
-
-	/* OK to call the transition function */
-/*
-	InitFunctionCallInfoData(*fcinfo, &(peraggstate->transfn), numArguments + 1, (void *) aggstate, NULL);
-	fcinfo->arg[0] = pergroupstate->transValue;
-	fcinfo->argnull[0] = pergroupstate->transValueIsNull;
-	newVal = FunctionCallInvoke(fcinfo);
-*/
-	/*
-	 * If pass-by-ref datatype, must copy the new value into aggcontext and
-	 * pfree the prior transValue.	But if transfn returned a pointer to its
-	 * first input, we don't need to do anything.
-	 */
-
 
 	if (!peraggstate->transtypeByVal &&
 		DatumGetPointer(newVal) != DatumGetPointer(pergroupstate->transValue))
@@ -737,7 +656,7 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 		{
 			MemoryContextSwitchTo(aggstate->aggcontext);
 			newVal = datumCopy(newVal, peraggstate->transtypeByVal,
-							   peraggstate->transtypeLen);
+				peraggstate->transtypeLen);
 		}
 		if (!pergroupstate->transValueIsNull)
 		{
@@ -770,7 +689,7 @@ bool
 vagg_hash_initial_pass(AggState *aggstate)
 {
 	HashAggTable *hashtable = aggstate->hhashtable;
-	ExprContext *tmpcontext = aggstate->tmpcontext; 
+	ExprContext *tmpcontext = aggstate->tmpcontext;
 	TupleTableSlot *outerslot = NULL;
 	bool streaming = ((Agg *) aggstate->ss.ps.plan)->streaming;
 	bool tuple_remaining = true;
@@ -787,7 +706,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 		outerslot = hashtable->prev_slot;
 		hashtable->prev_slot = NULL;
 	}
-	
+
 	else
 	{
 		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
@@ -795,8 +714,11 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 	hashtable->pass = 0;
 
-
+	//create agg_groupdata and set the pointer of tb to it
+	BatchAggGroupData agg_groupdata;
 	TupleBatch tb = (TupleBatch)outerslot->PRIVATE_tts_data;
+	tb->agg_groupdata = &agg_groupdata;
+
 	//the below items only need init once
 	ExecStoreAllNullTuple(tb->rowSlot);
 	int nvalid = tb->nvalid;
@@ -822,26 +744,26 @@ vagg_hash_initial_pass(AggState *aggstate)
 			elog(NOTICE, "batch row size:%d", tb->nrow);
 			print_nrows = false;
 		}
-		
-		//init the group linklist's elements
-		tb->group_cnt = 0;
+
+		//init agg_groupdata in each loop
+		tb->agg_groupdata->group_cnt = 0;
 		for (int i = 0; i < BATCH_SIZE; i++)
-			tb->idx_list[i] = -1;
+			tb->agg_groupdata->idx_list[i] = -1;
 
 		for (int i=0;i<tb->nrow;i++)
 		{
-			TupleTableSlot *scanslot = getNextRowFromTupleBatch(tb, outerslot->tts_tupleDescriptor);	
+			TupleTableSlot *scanslot = getNextRowFromTupleBatch(tb, outerslot->tts_tupleDescriptor);
 
 			if (aggstate->hashslot->tts_tupleDescriptor == NULL)
 			{
 				int size;
-								
-				ExecSetSlotDescriptor(aggstate->hashslot, outerslot->tts_tupleDescriptor); 
+
+				ExecSetSlotDescriptor(aggstate->hashslot, outerslot->tts_tupleDescriptor);
 				ExecStoreAllNullTuple(aggstate->hashslot);
 				mt_bind = aggstate->hashslot->tts_mt_bind;
 
 				size = ((Agg *)aggstate->ss.ps.plan)->numCols * sizeof(HashKey);
-				
+
 				hashtable->hashkey_buf = (HashKey *)palloc0(size);
 				hashtable->mem_for_metadata += size;
 			}
@@ -850,7 +772,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 			hashkey = calc_hash_value(aggstate, scanslot);
 			entry = lookup_agg_hash_entry(aggstate, (void *)scanslot, 0, 0, hashkey, 0, &isNew);
-			
+
 			if (entry == NULL)
 			{
 				elog(NOTICE, "hashtable is full");
@@ -859,9 +781,9 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 				if (hashtable->num_ht_groups <= 1)
 					ereport(ERROR,
-							(errcode(ERRCODE_GP_INTERNAL_ERROR),
-									 ERRMSG_GP_INSUFFICIENT_STATEMENT_MEMORY));
-				
+						(errcode(ERRCODE_GP_INTERNAL_ERROR),
+						 ERRMSG_GP_INSUFFICIENT_STATEMENT_MEMORY));
+
 				if (streaming)
 				{
 					Assert(tuple_remaining);
@@ -873,7 +795,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 					agg_hash_table_stat_upd(hashtable);
 			}
 
-			
+
 			if (isNew)
 			{
 				setGroupAggs(hashtable, mt_bind, entry);
@@ -881,31 +803,31 @@ vagg_hash_initial_pass(AggState *aggstate)
 				//elog(NOTICE, "new hash group for key:%u", hashkey);
 				int tup_len = memtuple_get_size((MemTuple)entry->tuple_and_aggs, mt_bind);
 				MemSet((char *)entry->tuple_and_aggs + MAXALIGN(tup_len), 0,
-					   aggstate->numaggs * sizeof(AggStatePerGroupData));
+					aggstate->numaggs * sizeof(AggStatePerGroupData));
 				initialize_aggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs,
-									  &(aggstate->mem_manager));
+					&(aggstate->mem_manager));
 			}
 
 			//First, builds the group linklist.
 			GroupData *cur_header = NULL;
-			//find current group_header if exists, just a O(n) find
-			for (int j = 0; j < tb->group_cnt; j++)
-				if (tb->group_header[j].entry == entry)
-					cur_header = &(tb->group_header[j]);
+			//find current group_header if exists, just O(n) find
+			for (int j = 0; j < tb->agg_groupdata->group_cnt; j++)
+				if (tb->agg_groupdata->group_header[j].entry == entry)
+					cur_header = &(tb->agg_groupdata->group_header[j]);
 
 			if (cur_header == NULL) {
 				// add a new group header
-				tb->group_header[tb->group_cnt].idx = i;
-				tb->group_header[tb->group_cnt].entry = entry;
-				tb->group_cnt++;
+				tb->agg_groupdata->group_header[tb->agg_groupdata->group_cnt].idx = i;
+				tb->agg_groupdata->group_header[tb->agg_groupdata->group_cnt].entry = entry;
+				tb->agg_groupdata->group_cnt++;
 			}
 			else {
 				//group header already exists, just insert the current tuple to the "neck"
-				tb->idx_list[i] = cur_header->idx;
+				tb->agg_groupdata->idx_list[i] = cur_header->idx;
 				cur_header->idx = i;
 			}
 
-			//no need call advance_aggregates in each tuple
+			//no need call advance_aggregates on each tuple
 			//advance_aggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
 
 			hashtable->num_tuples++;
@@ -921,7 +843,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 		}
 
-		//do exec batch project, batch in tb
+		//Second, do exec batch project
 		tmpcontext->ecxt_scantuple = outerslot;
 		for (int aggno = 0; aggno < aggstate->numaggs; aggno++)
 		{
@@ -930,17 +852,16 @@ vagg_hash_initial_pass(AggState *aggstate)
 			//slot_getallattrs(slot);
 		}
 
-		//Second, call advance_aggregates in each agg group.
+		//Third, call advance_aggregates in each agg group.
 		tmpcontext->ecxt_scantuple = outerslot;
-		for (int i = 0; i < tb->group_cnt; i++) {
-			GroupData *cur_header = &(tb->group_header[i]);
-			tb->group_idx = i;
+		for (int i = 0; i < tb->agg_groupdata->group_cnt; i++) {
+			GroupData *cur_header = &(tb->agg_groupdata->group_header[i]);
+			tb->agg_groupdata->group_idx = i;
 
 			//set hashtable->groupaggs to the agg_hash_entry
 			setGroupAggs(hashtable, aggstate->hashslot->tts_mt_bind, cur_header->entry);
 
 			advance_vaggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
-			//advance_aggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
 		}
 
 		ResetExprContext(tmpcontext);
@@ -950,7 +871,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 	if (GET_TOTAL_USED_SIZE(hashtable) > hashtable->mem_used)
 		hashtable->mem_used = GET_TOTAL_USED_SIZE(hashtable);
 
-   	AssertImply(tuple_remaining, streaming);
+	AssertImply(tuple_remaining, streaming);
 
 	return tuple_remaining;
 }
@@ -962,10 +883,7 @@ Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleB
 
 	for (int i=0;i<nrow;i++)
 	{
-//		if (!columnData->nulls[i])
-//		{
-			newValue = newValue + (int64) DatumGetInt32(columnData->values[i]);
-//		}
+		newValue = newValue + (int64) DatumGetInt32(columnData->values[i]);
 	}
 
 	return Int64GetDatum(newValue);
@@ -981,14 +899,14 @@ Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, Tup
 Datum int4_sum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
 {
 	int64 newValue = DatumGetInt64(origValue);
-	GroupData *cur_header = &(tb->group_header[tb->group_idx]);
+	GroupData *cur_header = &(tb->agg_groupdata->group_header[tb->agg_groupdata->group_idx]);
 
 	int cur_idx = cur_header->idx;
 	//go through the current linklist and calculate the item sum
 	while (cur_idx != -1) {
 		int64 cur_value = (int64) DatumGetInt32(columnData->values[cur_idx]);
 		newValue += cur_value;
-		cur_idx = tb->idx_list[cur_idx];
+		cur_idx = tb->agg_groupdata->idx_list[cur_idx];
 	}
 
 	return Int64GetDatum(newValue);
@@ -998,13 +916,13 @@ Datum int4_sum_vec_group_internal(Datum origValue, TupleColumnData *columnData, 
 Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
 {
 	int64 count = 0;
-	GroupData *cur_header = &(tb->group_header[tb->group_idx]);
+	GroupData *cur_header = &(tb->agg_groupdata->group_header[tb->agg_groupdata->group_idx]);
 
 	int cur_idx = cur_header->idx;
 	//go through the current linklist and calculate the item count
 	while (cur_idx != -1) {
 		count++;
-		cur_idx = tb->idx_list[cur_idx];
+		cur_idx = tb->agg_groupdata->idx_list[cur_idx];
 	}
 
 	return Int64GetDatum(DatumGetInt64(origValue) + count);

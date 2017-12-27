@@ -31,8 +31,7 @@ TupleBatch createTupleBatch(int nrow, int ncol, TupleDesc tupdesc, bool *projs)
 	tb->rowSlot = MakeSingleTupleTableSlot(tb->tupDesc);
 	tb->rowIdx = -1;
 
-	tb->group_cnt = 0; //cnt is 0 indicates not a groupby agg
-	tb->group_idx = -1;
+	tb->agg_groupdata = NULL;
 
 	return tb;
 }
