@@ -11,6 +11,8 @@
 #include "../backend/executor/execHHashagg.c"
 #include "vexecQual.h"
 
+//#include "clhash.h"
+
 PG_MODULE_MAGIC;
 
 //batch hashagg group linklist header
@@ -671,6 +673,52 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	MemoryContextSwitchTo(oldContext);
 }
 
+union hash64val
+{
+	uint64 val64;
+	uint32 val32[2];
+};
+
+static uint32
+my_calc_hash_value(AggState* aggstate, TupleTableSlot *inputslot, void * random)
+{
+	Agg *agg;
+	ExprContext *econtext;
+	MemoryContext oldContext;
+	int			i;
+	FmgrInfo* info = aggstate->hashfunctions;
+	HashAggTable *hashtable = aggstate->hhashtable;
+
+	agg = (Agg*)aggstate->ss.ps.plan;
+	econtext = aggstate->tmpcontext; /* short-lived, per-input-tuple */
+
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	for (i = 0; i < agg->numCols; i++, info++)
+	{
+		AttrNumber	att = agg->grpColIdx[i];
+		bool isnull = false;
+		Datum value = slot_getattr(inputslot, att, &isnull);
+
+		if (!isnull)			/* treat nulls as having hash key 0 */
+		{
+			hashtable->hashkey_buf[i] = DatumGetUInt32(FunctionCall1(info, value));
+		}
+
+		else
+			hashtable->hashkey_buf[i] = 0xdeadbeef;
+
+	}
+
+	MemoryContextSwitchTo(oldContext);
+
+	union hash64val hashcode;
+	hashcode.val64 = clhash(random, (unsigned char *) hashtable->hashkey_buf, agg->numCols * sizeof(HashKey));
+	return hashcode.val32[0] + hashcode.val32[1];
+	//return (uint32) hash_any((unsigned char *) hashtable->hashkey_buf, agg->numCols * sizeof(HashKey));
+}
+
+
 /* Function: agg_hash_initial_pass
  *
  * Performs ExecAgg initialization for the first pass of the hashed case:
@@ -699,6 +747,9 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 	Assert(hashtable);
 	AssertImply(!streaming, hashtable->state == HASHAGG_BEFORE_FIRST_PASS);
+
+	//void * random = get_random_key_for_clhash(UINT64_C(0x23a23cf5033c3c81),UINT64_C(0xb3816f6a2c68e530));
+
 
 	if (aggstate->hashslot->tts_tupleDescriptor != NULL &&
 		hashtable->prev_slot != NULL)
@@ -771,6 +822,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 			tmpcontext->ecxt_scantuple = scanslot;
 
 			hashkey = calc_hash_value(aggstate, scanslot);
+			//hashkey = my_calc_hash_value(aggstate, scanslot, random);
 			entry = lookup_agg_hash_entry(aggstate, (void *)scanslot, 0, 0, hashkey, 0, &isNew);
 
 			if (entry == NULL)
