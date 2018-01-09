@@ -1963,6 +1963,12 @@ ExecBatchMakeFunctionResultNoSets(FuncExprState *fcache,
     	*/
     	batch_size = batch_int4pl(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
     }
+	else if(fcache->func.fn_oid == 181) {
+		batch_size = batch_int4mi(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+	}
+	else if(fcache->func.fn_oid == 141) {
+		batch_size = batch_int4mul(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+	}
     else {
     	elog(ERROR, "cannot support function %d", fcache->func.fn_oid);
     }

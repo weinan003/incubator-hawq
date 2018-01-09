@@ -718,6 +718,36 @@ batch_int4pl(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
 	return size1;
 }
 
+int
+batch_int4mul(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
+{
+	int size1 = batch_size[0];
+	int size2 = batch_size[1];
+
+	assert(size2 == 1);
+	int scalar = DatumGetInt32(arg2[0]);
+	for (int i = 0; i < size1; i++) {
+		result[i] = DatumGetInt32(arg1[i]) * scalar;
+	}
+
+	return size1;
+}
+
+int
+batch_int4mi(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
+{
+	int size1 = batch_size[0];
+	int size2 = batch_size[1];
+
+	assert(size2 == 1);
+	int scalar = DatumGetInt32(arg2[0]);
+	for (int i = 0; i < size1; i++) {
+		result[i] = DatumGetInt32(arg1[i]) - scalar;
+	}
+
+	return size1;
+}
+
 
 Datum
 int4mi(PG_FUNCTION_ARGS)

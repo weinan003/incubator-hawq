@@ -15,4 +15,9 @@
 int
 batch_int4pl(Datum *arg1, Datum *arg2, int *batch_size, Datum *result);
 
+int
+batch_int4mi(Datum *arg1, Datum *arg2, int *batch_size, Datum *result);
+
+int
+batch_int4mul(Datum *arg1, Datum *arg2, int *batch_size, Datum *result);
 #endif
