@@ -33,6 +33,16 @@ struct BatchAggGroupData{
 	int 		idx_list[BATCH_SIZE];
 };
 
+typedef struct IntFloatAvgTransdata
+{
+	int32   _len; /* len for varattrib, do not touch directly */
+#if 1
+	int32   pad;  /* pad so int64 and float64 will be 8 bytes aligned */
+#endif
+	int64 	count;
+	float8 sum;
+} IntFloatAvgTransdata;
+
 
 static exec_agg_hook_type PreviousExecAggHook = NULL;
 static init_agg_hook_type PreviousInitAggHook = NULL;
@@ -79,12 +89,14 @@ static void finalize_vaggregate(AggState *aggstate,
 static bool vagg_hash_initial_pass(AggState *aggstate);
 
 // plain agg
+static Datum int4_avg_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 
 // group agg
 static Datum int4_sum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+static Datum int4_avg_accum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 
 
 /*
@@ -568,7 +580,7 @@ finalize_vaggregate(AggState *aggstate,
 	}
 	else
 	{
-		*resultVal = pergroupstate->transValue;
+        *resultVal = pergroupstate->transValue;
 		//*resultIsNull = pergroupstate->transValueIsNull;
 		*resultIsNull = false;
 	}
@@ -641,6 +653,14 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 		else
 			newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, scan_tb);
 	}
+	else if (strstr(funcName,"_avg") != NULL)
+	{
+        //avg
+		if (scan_tb->agg_groupdata->group_cnt > 0)
+			newVal = int4_avg_accum_vec_group_internal(pergroupstate->transValue, columnData, scan_tb); //groupby path
+		else
+            newVal = int4_avg_vec_internal(pergroupstate->transValue, columnData, scan_tb);
+    }
 	else
 	{
 		//count
@@ -858,6 +878,17 @@ vagg_hash_initial_pass(AggState *aggstate)
 					aggstate->numaggs * sizeof(AggStatePerGroupData));
 				initialize_aggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs,
 					&(aggstate->mem_manager));
+
+                /* if transValue is not a immediate number then alloc maximum size */
+                for (int i = 0;i < aggstate->numaggs;i ++)
+                {
+                    if(!aggstate->peragg[i].initValueIsNull)
+                    {
+                        hashtable->groupaggs->aggs[i].transValue = palloc(sizeof(IntFloatAvgTransdata));
+                        memset(hashtable->groupaggs->aggs[i].transValue ,0, sizeof(IntFloatAvgTransdata));
+                        SET_VARSIZE(hashtable->groupaggs->aggs[i].transValue, sizeof(IntFloatAvgTransdata));
+                    }
+                }
 			}
 
 			//First, builds the group linklist.
@@ -916,7 +947,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 			advance_vaggregates(aggstate, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
 		}
 
-		ResetExprContext(tmpcontext);
+        ResetExprContext(tmpcontext);
 		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
 	}
 
@@ -926,6 +957,21 @@ vagg_hash_initial_pass(AggState *aggstate)
 	AssertImply(tuple_remaining, streaming);
 
 	return tuple_remaining;
+}
+
+Datum int4_avg_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+    int nrow = tb->nrow;
+    IntFloatAvgTransdata *tr = (IntFloatAvgTransdata *)DatumGetPointer(origValue);
+
+    for (int i=0;i<nrow;i++)
+    {
+        int64 cur_value = DatumGetInt32(columnData->values[i]);
+        ++tr->count;
+        tr->sum += cur_value;
+    }
+
+    return PointerGetDatum(tr);
 }
 
 Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
@@ -945,6 +991,23 @@ Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, Tup
 {
 	int nrow = tb->nrow;
 	return Int64GetDatum(DatumGetInt64(origValue) + nrow);
+}
+
+//group avg accum
+Datum int4_avg_accum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+    IntFloatAvgTransdata *tr = (IntFloatAvgTransdata *)DatumGetPointer(origValue);
+    GroupData* cur_header = &(tb->agg_groupdata->group_header[tb->agg_groupdata->group_idx]);
+
+	int cur_idx = cur_header->idx;
+	while (cur_idx != -1) {
+		int64 cur_value = DatumGetInt32(columnData->values[cur_idx]);
+		++tr->count;
+		tr->sum += cur_value;
+        cur_idx = tb->agg_groupdata->idx_list[cur_idx];
+    }
+
+    return PointerGetDatum(tr);
 }
 
 //group sum
