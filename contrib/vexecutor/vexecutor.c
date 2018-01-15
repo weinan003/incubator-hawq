@@ -444,11 +444,9 @@ initialize_vaggregates(AggState *aggstate,
 		}
 		else
 		{
-			pergroupstate->transValue = datumCopyWithMemManager(0,
-				peraggstate->initValue,
-				peraggstate->transtypeByVal,
-				peraggstate->transtypeLen,
-				mem_manager);
+            pergroupstate->transValue = palloc(sizeof(IntFloatAvgTransdata));
+            memset(pergroupstate->transValue ,0, sizeof(IntFloatAvgTransdata));
+            SET_VARSIZE(pergroupstate->transValue, sizeof(IntFloatAvgTransdata));
 		}
 		pergroupstate->transValueIsNull = peraggstate->initValueIsNull;
 		pergroupstate->noTransValue = peraggstate->initValueIsNull;
@@ -647,7 +645,7 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	if (strstr(funcName, "_sum") != NULL)
 	{
 		//sum
-		if (scan_tb->agg_groupdata->group_cnt > 0)
+		if (scan_tb->agg_groupdata)
 			//groupby
 			newVal = int4_sum_vec_group_internal(pergroupstate->transValue, columnData, scan_tb);
 		else
@@ -656,7 +654,7 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	else if (strstr(funcName,"_avg") != NULL)
 	{
         //avg
-		if (scan_tb->agg_groupdata->group_cnt > 0)
+		if (scan_tb->agg_groupdata)
 			newVal = int4_avg_accum_vec_group_internal(pergroupstate->transValue, columnData, scan_tb); //groupby path
 		else
             newVal = int4_avg_vec_internal(pergroupstate->transValue, columnData, scan_tb);
@@ -664,7 +662,7 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	else
 	{
 		//count
-		if (scan_tb->agg_groupdata->group_cnt > 0)
+		if (scan_tb->agg_groupdata)
 			//groupby
 			newVal = int8inc_any_vec_group_internal(pergroupstate->transValue, columnData, scan_tb);
 		else
