@@ -20,4 +20,13 @@ batch_int4mi(Datum *arg1, Datum *arg2, int *batch_size, Datum *result);
 
 int
 batch_int4mul(Datum *arg1, Datum *arg2, int *batch_size, Datum *result);
+
+int
+batch_date_le(Datum *arg1,Datum *arg2,int *batch_size,Datum *result);
+
+int
+batch_int4le(Datum *arg1,Datum *arg2,int *batch_size,Datum *result);
+
+int
+batch_data_le_timestamp(Datum *arg1, Datum *arg2, int *batch_size, Datum *result);
 #endif

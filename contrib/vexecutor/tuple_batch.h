@@ -33,6 +33,9 @@ typedef struct TupleBatchData {
 
 	// only for batch hash agg
 	BatchAggGroupData *agg_groupdata;
+
+	// for qualify
+	Datum			*skip;
 } TupleBatchData, *TupleBatch;
 
 TupleBatch createTupleBatch(int nrow, int ncol, TupleDesc tupdesc, bool *projs);

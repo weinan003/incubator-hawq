@@ -33,13 +33,16 @@ TupleBatch createTupleBatch(int nrow, int ncol, TupleDesc tupdesc, bool *projs)
 
 	tb->agg_groupdata = NULL;
 
+	tb->skip = (Datum*)palloc0(sizeof(Datum) * BATCH_SIZE);
+
 	return tb;
 }
 
 void resetTupleBatch(TupleBatch tb)
 {
 	tb->nvalid = 0;
-	tb->rowIdx = -1;	
+	tb->rowIdx = -1;
+    memset(tb->skip,0, sizeof(Datum) * BATCH_SIZE);
 }
 
 
@@ -66,6 +69,7 @@ void destroyTupleBatch(TupleBatch tb)
 		}
 	}
 
+    pfree(tb->skip);
 	pfree(tb);
 }
 
@@ -86,7 +90,10 @@ void setTupleBatchProjColumn(TupleBatch tb, int colIdx, int value)
 
 TupleTableSlot *getNextRowFromTupleBatch(TupleBatch tb, TupleDesc tupdesc)
 {
-	tb->rowIdx++;
+    do{
+		tb->rowIdx++;
+	}while (tb->skip && tb->rowIdx >= tb->nrow);
+
 	if (tb->rowIdx >= tb->nrow)
 	{
 		return NULL;

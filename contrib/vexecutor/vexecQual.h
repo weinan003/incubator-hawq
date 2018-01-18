@@ -28,6 +28,8 @@ TupleTableSlot *
 VExecProject(ProjectionInfo *projInfo, ExprDoneCond *isDone);
 ExprState *
 VExecInitExpr(Expr *node, PlanState *parent);
+bool
+VExecQual(List *qual, ExprContext *econtext, bool resultForNull);
 
 
 #endif

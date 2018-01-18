@@ -1969,6 +1969,18 @@ ExecBatchMakeFunctionResultNoSets(FuncExprState *fcache,
 	else if(fcache->func.fn_oid == 141) {
 		batch_size = batch_int4mul(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
 	}
+	else if(fcache->func.fn_oid == 1088)
+	{
+        batch_size = batch_date_le(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
+	}
+	else if(fcache->func.fn_oid == 2339)
+	{
+		batch_size = batch_data_le_timestamp(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
+	}
+    else if(fcache->func.fn_oid == 149)
+	{
+		batch_size = batch_int4le(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
+	}
     else {
     	elog(ERROR, "cannot support function %d", fcache->func.fn_oid);
     }
@@ -5509,7 +5521,7 @@ ExecPrepareExpr(Expr *node, EState *estate)
  * ----------------------------------------------------------------
  */
 bool
-ExecQual(List *qual, ExprContext *econtext, bool resultForNull)
+VExecQual(List *qual, ExprContext *econtext, bool resultForNull)
 {
 	bool		result;
 	MemoryContext oldContext;
@@ -5546,10 +5558,14 @@ ExecQual(List *qual, ExprContext *econtext, bool resultForNull)
 	foreach(l, qual)
 	{
 		ExprState  *clause = (ExprState *) lfirst(l);
-		Datum		expr_value;
+		Datum*		expr_value;
 		bool		isNull;
 
-		expr_value = ExecEvalExpr(clause, econtext, &isNull, NULL);
+		clause = VExecInitExpr(clause->expr,NULL);
+		TupleBatch tb= (TupleBatch )econtext->ecxt_scantuple->PRIVATE_tts_data;
+        memset(tb->skip,0, sizeof(Datum) * BATCH_SIZE);
+
+		VExecEvalExpr(clause, econtext, &isNull, tb->skip);
 
 		if (isNull)
 		{
@@ -5561,11 +5577,11 @@ ExecQual(List *qual, ExprContext *econtext, bool resultForNull)
 		}
 		else
 		{
-			if (!DatumGetBool(expr_value))
-			{
-				result = false; /* definitely FALSE */
-				break;
-			}
+			//if (!DatumGetBool(expr_value))
+			//{
+			//	result = false; /* definitely FALSE */
+			break;
+			//}
 		}
 	}
 
@@ -5642,8 +5658,8 @@ VExecTargetList(List *targetlist,
 
 	haveDoneSets = false;		/* any exhausted set exprs in tlist? */
 
-	TupleTableSlot *scan_slot = econtext->ecxt_scantuple;
-	TupleBatch scan_tb = (TupleBatch)scan_slot->PRIVATE_tts_data;
+	//TupleTableSlot *scan_slot = econtext->ecxt_scantuple;
+	//TupleBatch scan_tb = (TupleBatch)scan_slot->PRIVATE_tts_data;
 
 	foreach(tl, targetlist)
 	{

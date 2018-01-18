@@ -1,6 +1,7 @@
 #include "parquet_reader.h"
 #include "tuple_batch.h"
 #include "debug.h"
+#include "vexecQual.h"
 
 extern bool getNextRowGroup(ParquetScanDesc scan);
 
@@ -116,7 +117,7 @@ ExecParquetScanRelation(ScanState *node)
          * when the qual is nil ... saves only a few cycles, but they add up
          * ...
          */
-        if (!qual || ExecQual(qual, econtext, false))
+        if (!qual || VExecQual(qual, econtext, false))
         {
             /*
              * Found a satisfactory scan tuple.

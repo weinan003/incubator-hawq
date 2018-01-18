@@ -702,6 +702,39 @@ int4pl(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(result);
 }
 
+static Timestamp
+date2timestamp(int32 dateVal)
+{
+	int64 result;
+
+#ifdef HAVE_INT64_TIMESTAMP
+	/* date is days since 2000, timestamp is microseconds since same... */
+	result = dateVal * USECS_PER_DAY;
+	/* Date's range is wider than timestamp's, so check for overflow */
+	if (result / USECS_PER_DAY != dateVal)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+						errmsg("date out of range for timestamp")));
+#else
+	/* date is days since 2000, timestamp is seconds since same... */
+	result = dateVal * (double) SECS_PER_DAY;
+#endif
+
+	return result;
+}
+int
+batch_data_le_timestamp(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
+{
+	int size1 = batch_size[0];
+
+    for(int i = 0;i < size1; i ++)
+	{
+		int32 dateVal = DatumGetInt32(arg1[i]);
+        int64 dt2= (Timestamp )DatumGetInt64(arg2[i]);
+		int64 dt1 = date2timestamp(dateVal);
+		result[i] = !DatumGetBool(timestamp_cmp_internal(dt1, dt2) <= 0);
+	}
+}
 
 int
 batch_int4pl(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
@@ -722,7 +755,6 @@ int
 batch_int4mul(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
 {
 	int size1 = batch_size[0];
-	int size2 = batch_size[1];
 
 	//assert(size2 == 1);
 	int scalar = DatumGetInt32(arg2[0]);
@@ -737,7 +769,6 @@ int
 batch_int4mi(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
 {
 	int size1 = batch_size[0];
-	int size2 = batch_size[1];
 
 	//assert(size2 == 1);
 	int scalar = DatumGetInt32(arg2[0]);
@@ -748,6 +779,30 @@ batch_int4mi(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
 	return size1;
 }
 
+int
+batch_date_le(Datum *arg1,Datum *arg2,int *batch_size,Datum *result)
+{
+
+    int size1 = batch_size[0];
+
+	for(int i =0;i < size1;i ++)
+	{
+		result[i] = !(BoolGetDatum(DatumGetInt32(arg1[i]) <= DatumGetInt32(arg2[0])));
+	}
+	return size1;
+}
+
+int
+batch_int4le(Datum *arg1,Datum *arg2,int *batch_size,Datum *result)
+{
+	int size1 = batch_size[0];
+
+	for(int i =0;i < size1;i ++)
+	{
+		result[i] = !(BoolGetDatum(DatumGetInt32(arg1[i]) <= DatumGetInt32(arg2[0])));
+	}
+	return size1;
+}
 
 Datum
 int4mi(PG_FUNCTION_ARGS)

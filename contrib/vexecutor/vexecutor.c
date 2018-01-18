@@ -823,6 +823,9 @@ vagg_hash_initial_pass(AggState *aggstate)
 		{
 			TupleTableSlot *scanslot = getNextRowFromTupleBatch(tb, outerslot->tts_tupleDescriptor);
 
+			if (!scanslot)
+                break;
+
 			if (aggstate->hashslot->tts_tupleDescriptor == NULL)
 			{
 				int size;
@@ -964,9 +967,12 @@ Datum int4_avg_vec_internal(Datum origValue, TupleColumnData *columnData, TupleB
 
     for (int i=0;i<nrow;i++)
     {
-        int64 cur_value = DatumGetInt32(columnData->values[i]);
-        ++tr->count;
-        tr->sum += cur_value;
+        if(!tb->skip[i])
+		{
+			int64 cur_value = DatumGetInt32(columnData->values[i]);
+			++tr->count;
+			tr->sum += cur_value;
+		}
     }
 
     return PointerGetDatum(tr);
@@ -979,7 +985,9 @@ Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleB
 
 	for (int i=0;i<nrow;i++)
 	{
-		newValue = newValue + (int64) DatumGetInt32(columnData->values[i]);
+		if(!tb->skip[i]) {
+			newValue = newValue + (int64) DatumGetInt32(columnData->values[i]);
+		}
 	}
 
 	return Int64GetDatum(newValue);
@@ -987,8 +995,30 @@ Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleB
 
 Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
 {
-	int nrow = tb->nrow;
+	int nrow = 0;
+	for(int i = 0;i<tb->nrow;i++)
+		if(!tb->skip[i]) ++nrow;
+
+
 	return Int64GetDatum(DatumGetInt64(origValue) + nrow);
+}
+
+//group count
+Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+	int64 count = 0;
+	GroupData *cur_header = &(tb->agg_groupdata->group_header[tb->agg_groupdata->group_idx]);
+
+	int cur_idx = cur_header->idx;
+	//go through the current linklist and calculate the item count
+	while (cur_idx != -1) {
+		if(!tb->skip[cur_idx]) {
+			count++;
+		}
+		cur_idx = tb->agg_groupdata->idx_list[cur_idx];
+	}
+
+	return Int64GetDatum(DatumGetInt64(origValue) + count);
 }
 
 //group avg accum
@@ -999,10 +1029,12 @@ Datum int4_avg_accum_vec_group_internal(Datum origValue, TupleColumnData *column
 
 	int cur_idx = cur_header->idx;
 	while (cur_idx != -1) {
-		int64 cur_value = DatumGetInt32(columnData->values[cur_idx]);
-		++tr->count;
-		tr->sum += cur_value;
-        cur_idx = tb->agg_groupdata->idx_list[cur_idx];
+		if(!tb->skip[cur_idx]) {
+			int64 cur_value = DatumGetInt32(columnData->values[cur_idx]);
+			++tr->count;
+			tr->sum += cur_value;
+		}
+		cur_idx = tb->agg_groupdata->idx_list[cur_idx];
     }
 
     return PointerGetDatum(tr);
@@ -1017,26 +1049,13 @@ Datum int4_sum_vec_group_internal(Datum origValue, TupleColumnData *columnData, 
 	int cur_idx = cur_header->idx;
 	//go through the current linklist and calculate the item sum
 	while (cur_idx != -1) {
-		int64 cur_value = (int64) DatumGetInt32(columnData->values[cur_idx]);
-		newValue += cur_value;
+		if(!tb->skip[cur_idx]) {
+			int64 cur_value = (int64) DatumGetInt32(columnData->values[cur_idx]);
+			newValue += cur_value;
+		}
 		cur_idx = tb->agg_groupdata->idx_list[cur_idx];
 	}
 
 	return Int64GetDatum(newValue);
 }
 
-//group count
-Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
-{
-	int64 count = 0;
-	GroupData *cur_header = &(tb->agg_groupdata->group_header[tb->agg_groupdata->group_idx]);
-
-	int cur_idx = cur_header->idx;
-	//go through the current linklist and calculate the item count
-	while (cur_idx != -1) {
-		count++;
-		cur_idx = tb->agg_groupdata->idx_list[cur_idx];
-	}
-
-	return Int64GetDatum(DatumGetInt64(origValue) + count);
-}
