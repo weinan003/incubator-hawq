@@ -978,9 +978,13 @@ ExecBatchEvalConst(ExprState *exprstate, ExprContext *econtext,
 	if (isDone)
 		*isDone = ExprSingleResult;
 
-	//*isNull = con->constisnull;
-	result[0] = con->constvalue;
-	return 1;
+	TupleBatch tb= (TupleBatch )econtext->ecxt_scantuple->PRIVATE_tts_data;
+
+	int ret = 0;
+    for(;ret < tb->nrow;++ret)
+		result[ret] = con->constvalue;
+
+	return ret;
 }
 
 /* ----------------------------------------------------------------
@@ -5555,34 +5559,15 @@ VExecQual(List *qual, ExprContext *econtext, bool resultForNull)
 	 */
 	result = true;
 
+    TupleBatch tb= (TupleBatch )econtext->ecxt_scantuple->PRIVATE_tts_data;
+    memset(tb->skip,0, sizeof(Datum) * BATCH_SIZE);
 	foreach(l, qual)
 	{
 		ExprState  *clause = (ExprState *) lfirst(l);
-		Datum*		expr_value;
 		bool		isNull;
-
 		clause = VExecInitExpr(clause->expr,NULL);
-		TupleBatch tb= (TupleBatch )econtext->ecxt_scantuple->PRIVATE_tts_data;
-        memset(tb->skip,0, sizeof(Datum) * BATCH_SIZE);
 
 		VExecEvalExpr(clause, econtext, &isNull, tb->skip);
-
-		if (isNull)
-		{
-			if (resultForNull == false)
-			{
-				result = false; /* treat NULL as FALSE */
-				break;
-			}
-		}
-		else
-		{
-			//if (!DatumGetBool(expr_value))
-			//{
-			//	result = false; /* definitely FALSE */
-			break;
-			//}
-		}
 	}
 
 	MemoryContextSwitchTo(oldContext);

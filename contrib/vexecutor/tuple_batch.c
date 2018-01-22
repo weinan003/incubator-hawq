@@ -90,9 +90,10 @@ void setTupleBatchProjColumn(TupleBatch tb, int colIdx, int value)
 
 TupleTableSlot *getNextRowFromTupleBatch(TupleBatch tb, TupleDesc tupdesc)
 {
-    do{
-		tb->rowIdx++;
-	}while (tb->skip && tb->rowIdx >= tb->nrow);
+	tb->rowIdx++;
+
+    if(tb->skip[tb->rowIdx])
+		return NULL;
 
 	if (tb->rowIdx >= tb->nrow)
 	{
@@ -100,7 +101,7 @@ TupleTableSlot *getNextRowFromTupleBatch(TupleBatch tb, TupleDesc tupdesc)
 	}
 
 	Datum *values = slot_get_values(tb->rowSlot);
-	bool *nulls = slot_get_isnull(tb->rowSlot);	
+	//bool *nulls = slot_get_isnull(tb->rowSlot);
 	//ExecStoreAllNullTuple(tb->rowSlot);
 
 	int i;

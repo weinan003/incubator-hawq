@@ -2,6 +2,7 @@
 #include "tuple_batch.h"
 #include "debug.h"
 #include "vexecQual.h"
+#include <assert.h>
 
 extern bool getNextRowGroup(ParquetScanDesc scan);
 
@@ -99,6 +100,7 @@ ExecParquetScanRelation(ScanState *node)
          */
         if (TupIsNull(slot))
         {
+			assert(1);
             if (projInfo)
                 return ExecClearTuple(projInfo->pi_slot);
             else

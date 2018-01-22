@@ -438,7 +438,7 @@ initialize_vaggregates(AggState *aggstate,
 			// TODO
 		}
 
-		if (peraggstate->initValueIsNull)
+		if (peraggstate->initValueIsNull || peraggstate->transtypeByVal)
 		{
 			pergroupstate->transValue = peraggstate->initValue;
 		}
@@ -622,22 +622,27 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 	int projIdx = 0;
 	TupleBatch tb = NULL;
 	int columnIndex = 0;
-	if (peraggstate->evalproj->pi_isVarList) {
-		projIdx = peraggstate->evalproj->pi_varNumbers[0]-1;  //core here before
-		tb = (TupleBatch)scantuple->PRIVATE_tts_data;
+	bool isstar = peraggstate->aggref->aggstar;
+    TupleColumnData *columnData  = NULL;
+	if(!isstar)
+	{
+		if (peraggstate->evalproj->pi_isVarList) {
+			projIdx = peraggstate->evalproj->pi_varNumbers[0] - 1;  //core here before -1
+			tb = (TupleBatch)scantuple->PRIVATE_tts_data;
 
-		columnIndex = projIdx;
-		if (tb->nvalid > 0)
-			columnIndex = tb->vprojs[projIdx] - 1;
-	}
-	else {
-		//use the eval slot to get tb
-		projIdx = 0 ; //what index? suppose always 0 (peragg project 1 batch)
-		tb = (TupleBatch)peraggstate->evalslot->PRIVATE_tts_data;
-		columnIndex = projIdx;
-	}
+			columnIndex = projIdx;
+			if (tb->nvalid > 0)
+				columnIndex = tb->vprojs[projIdx] - 1; // -1
+		}
+		else {
+			//use the eval slot to get tb
+			projIdx = 0 ; //what index? suppose always 0 (peragg project 1 batch)
+			tb = (TupleBatch)peraggstate->evalslot->PRIVATE_tts_data;
+			columnIndex = projIdx;
+		}
 
-	TupleColumnData *columnData = tb->columnDataArray[columnIndex];
+		columnData = tb->columnDataArray[columnIndex];
+	}
 
 	/* we run the transition functions in per-input-tuple memory context */
 	oldContext = MemoryContextSwitchTo(aggstate->tmpcontext->ecxt_per_tuple_memory);
@@ -824,7 +829,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 			TupleTableSlot *scanslot = getNextRowFromTupleBatch(tb, outerslot->tts_tupleDescriptor);
 
 			if (!scanslot)
-                break;
+				continue;
 
 			if (aggstate->hashslot->tts_tupleDescriptor == NULL)
 			{
@@ -877,19 +882,19 @@ vagg_hash_initial_pass(AggState *aggstate)
 				int tup_len = memtuple_get_size((MemTuple)entry->tuple_and_aggs, mt_bind);
 				MemSet((char *)entry->tuple_and_aggs + MAXALIGN(tup_len), 0,
 					aggstate->numaggs * sizeof(AggStatePerGroupData));
-				initialize_aggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs,
-					&(aggstate->mem_manager));
+				//initialize_aggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
+				initialize_vaggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs, &(aggstate->mem_manager));
 
                 /* if transValue is not a immediate number then alloc maximum size */
-                for (int i = 0;i < aggstate->numaggs;i ++)
-                {
-                    if(!aggstate->peragg[i].initValueIsNull)
-                    {
-                        hashtable->groupaggs->aggs[i].transValue = palloc(sizeof(IntFloatAvgTransdata));
-                        memset(hashtable->groupaggs->aggs[i].transValue ,0, sizeof(IntFloatAvgTransdata));
-                        SET_VARSIZE(hashtable->groupaggs->aggs[i].transValue, sizeof(IntFloatAvgTransdata));
-                    }
-                }
+                //for (int i = 0;i < aggstate->numaggs;i ++)
+                //{
+                //    if(!(aggstate->peragg[i].initValueIsNull || aggstate->peragg[i].transtypeByVal))
+                //    {
+                //        hashtable->groupaggs->aggs[i].transValue = palloc(sizeof(IntFloatAvgTransdata));
+                //        memset(hashtable->groupaggs->aggs[i].transValue ,0, sizeof(IntFloatAvgTransdata));
+                //        SET_VARSIZE(hashtable->groupaggs->aggs[i].transValue, sizeof(IntFloatAvgTransdata));
+                //    }
+                //}
 			}
 
 			//First, builds the group linklist.
@@ -996,10 +1001,16 @@ Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleB
 Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
 {
 	int nrow = 0;
+	static int sum = 0;
+    int skip = 0;
 	for(int i = 0;i<tb->nrow;i++)
 		if(!tb->skip[i]) ++nrow;
+	else skip++;
 
+	sum +=skip;
 
+	elog(NOTICE,"SKIP : %d ",skip);
+	elog(NOTICE,"SUM : %d ", sum);
 	return Int64GetDatum(DatumGetInt64(origValue) + nrow);
 }
 
