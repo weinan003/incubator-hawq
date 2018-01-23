@@ -92,11 +92,15 @@ static bool vagg_hash_initial_pass(AggState *aggstate);
 static Datum int4_avg_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+static Datum float8_pl_vec(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+static Datum float8_avg_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 
 // group agg
 static Datum int4_sum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 static Datum int4_avg_accum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+static Datum float8_pl_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
+static Datum float8_avg_accum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb);
 
 
 /*
@@ -656,6 +660,15 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 		else
 			newVal = int4_sum_vec_internal(pergroupstate->transValue, columnData, scan_tb);
 	}
+	else if (strstr(funcName,"float8_avg_accum")!= NULL)
+	{
+        //float8 avg
+		if (scan_tb->agg_groupdata)
+			newVal = float8_avg_accum_vec_group_internal(pergroupstate->transValue, columnData, scan_tb); //groupby path
+		else
+			newVal = float8_avg_vec_internal(pergroupstate->transValue, columnData, scan_tb);
+
+	}
 	else if (strstr(funcName,"_avg") != NULL)
 	{
         //avg
@@ -664,6 +677,13 @@ advance_vtransition_function(AggState *aggstate, AggStatePerAgg peraggstate,
 		else
             newVal = int4_avg_vec_internal(pergroupstate->transValue, columnData, scan_tb);
     }
+    else if(strstr(funcName,"float8pl") != NULL)
+	{
+		if (scan_tb ->agg_groupdata)
+            newVal = float8_pl_vec_group_internal(pergroupstate->transValue, columnData, scan_tb);
+		else
+			newVal = float8_pl_vec(pergroupstate->transValue, columnData, scan_tb);
+	}
 	else
 	{
 		//count
@@ -902,7 +922,11 @@ vagg_hash_initial_pass(AggState *aggstate)
 			//find current group_header if exists, just O(n) find
 			for (int j = 0; j < tb->agg_groupdata->group_cnt; j++)
 				if (tb->agg_groupdata->group_header[j].entry == entry)
+				{
 					cur_header = &(tb->agg_groupdata->group_header[j]);
+                    break;
+				}
+
 
 			if (cur_header == NULL) {
 				// add a new group header
@@ -965,6 +989,57 @@ vagg_hash_initial_pass(AggState *aggstate)
 	return tuple_remaining;
 }
 
+Datum float8_pl_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+	float8 newValue = DatumGetFloat8(origValue);
+	GroupData *cur_header = &(tb->agg_groupdata->group_header[tb->agg_groupdata->group_idx]);
+
+	int cur_idx = cur_header->idx;
+	//go through the current linklist and calculate the item sum
+	while (cur_idx != -1) {
+		if(!tb->skip[cur_idx]) {
+			float8 cur_value =  DatumGetFloat8(columnData->values[cur_idx]);
+			newValue += cur_value;
+		}
+		cur_idx = tb->agg_groupdata->idx_list[cur_idx];
+	}
+
+	return Float8GetDatum(newValue);
+}
+
+Datum float8_pl_vec(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+
+	int nrow = tb->nrow;
+	float8 newValue = DatumGetFloat8(origValue);
+
+	for (int i=0;i<nrow;i++)
+	{
+		if(!tb->skip[i]) {
+			newValue = newValue +  DatumGetFloat8(columnData->values[i]);
+		}
+	}
+
+	return Float8GetDatum(newValue);
+}
+
+static Datum float8_avg_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+	int nrow = tb->nrow;
+	IntFloatAvgTransdata *tr = (IntFloatAvgTransdata *)DatumGetPointer(origValue);
+
+	for (int i=0;i<nrow;i++)
+	{
+		if(!tb->skip[i])
+		{
+			float8 cur_value = DatumGetFloat8(columnData->values[i]);
+			++tr->count;
+			tr->sum += cur_value;
+		}
+	}
+
+	return PointerGetDatum(tr);
+}
 Datum int4_avg_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
 {
     int nrow = tb->nrow;
@@ -1001,16 +1076,9 @@ Datum int4_sum_vec_internal(Datum origValue, TupleColumnData *columnData, TupleB
 Datum int8inc_any_vec_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
 {
 	int nrow = 0;
-	static int sum = 0;
-    int skip = 0;
 	for(int i = 0;i<tb->nrow;i++)
 		if(!tb->skip[i]) ++nrow;
-	else skip++;
 
-	sum +=skip;
-
-	elog(NOTICE,"SKIP : %d ",skip);
-	elog(NOTICE,"SUM : %d ", sum);
 	return Int64GetDatum(DatumGetInt64(origValue) + nrow);
 }
 
@@ -1030,6 +1098,24 @@ Datum int8inc_any_vec_group_internal(Datum origValue, TupleColumnData *columnDat
 	}
 
 	return Int64GetDatum(DatumGetInt64(origValue) + count);
+}
+
+Datum float8_avg_accum_vec_group_internal(Datum origValue, TupleColumnData *columnData, TupleBatch tb)
+{
+	IntFloatAvgTransdata *tr = (IntFloatAvgTransdata *)DatumGetPointer(origValue);
+	GroupData* cur_header = &(tb->agg_groupdata->group_header[tb->agg_groupdata->group_idx]);
+
+	int cur_idx = cur_header->idx;
+	while (cur_idx != -1) {
+		if(!tb->skip[cur_idx]) {
+			float8 cur_value = DatumGetFloat8(columnData->values[cur_idx]);
+			++tr->count;
+			tr->sum += cur_value;
+		}
+		cur_idx = tb->agg_groupdata->idx_list[cur_idx];
+	}
+
+	return PointerGetDatum(tr);
 }
 
 //group avg accum

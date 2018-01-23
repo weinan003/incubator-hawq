@@ -1954,47 +1954,46 @@ ExecBatchMakeFunctionResultNoSets(FuncExprState *fcache,
 
 	//result = FunctionCallInvoke(&fcinfo);
 	int batch_size = 0;
-    if (fcache->func.fn_oid == 177) {
-    	// fake data
-    	/*
-    	TupleTableSlot *scan_slot = econtext->ecxt_scantuple;
-    	TupleBatch scan_tb = (TupleBatch)scan_slot->PRIVATE_tts_data;
+	switch(fcache->func.fn_oid)
+	{
+		case 141:
+			batch_size = batch_int4mul(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+			break;
+		case 149:
+			batch_size = batch_int4le(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
+			break;
+		case 177:
+			batch_size = batch_int4pl(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+			break;
+		case 181:
+			batch_size = batch_int4mi(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+			break;
+		case 216:
+			batch_size = batch_float8mul(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+			break;
+		case 218:
+			batch_size = batch_float8pl(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+			break;
+		case 219:
+			batch_size = batch_float8mi(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
+			break;
+		case 1088:
+			batch_size = batch_date_le(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
+			break;
+		case 2339:
+			batch_size = batch_data_le_timestamp(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
+			break;
+		default:
+			elog(ERROR, "cannot support function %d", fcache->func.fn_oid);
 
-    	for (int i=0;i < scan_tb->nrow; i++) {
-    		result[i] = 1;
-    	}
-    	return 0;
-    	*/
-    	batch_size = batch_int4pl(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
-    }
-	else if(fcache->func.fn_oid == 181) {
-		batch_size = batch_int4mi(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
 	}
-	else if(fcache->func.fn_oid == 141) {
-		batch_size = batch_int4mul(fcinfo.arg[0], fcinfo.arg[1], fcinfo.arg_batch_size, result);
-	}
-	else if(fcache->func.fn_oid == 1088)
-	{
-        batch_size = batch_date_le(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
-	}
-	else if(fcache->func.fn_oid == 2339)
-	{
-		batch_size = batch_data_le_timestamp(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
-	}
-    else if(fcache->func.fn_oid == 149)
-	{
-		batch_size = batch_int4le(fcinfo.arg[0],fcinfo.arg[1], fcinfo.arg_batch_size,result);
-	}
-    else {
-    	elog(ERROR, "cannot support function %d", fcache->func.fn_oid);
-    }
 
 	InterruptWhenCallingPLUDF = false;
 	ImmediateInterruptOK = savedImmediateInterruptOK;
 
 	//*isNull = fcinfo.isnull;
 
-	return batch_size;
+	return Int32GetDatum(batch_size);
 }
 
 /*

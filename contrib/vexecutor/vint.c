@@ -734,13 +734,13 @@ batch_data_le_timestamp(Datum *arg1, Datum *arg2, int *batch_size, Datum *result
 		int64 dt1 = date2timestamp(dateVal);
 		result[i] = !DatumGetBool(timestamp_cmp_internal(dt1, dt2) <= 0);
 	}
+	return size1;
 }
 
 int
 batch_int4pl(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
 {
 	int size1 = batch_size[0];
-	int size2 = batch_size[1];
 
 	//assert(size2 == 1);
 	int scalar = DatumGetInt32(arg2[0]);
@@ -762,6 +762,36 @@ batch_int4mul(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
 		result[i] = DatumGetInt32(arg1[i]) * scalar;
 	}
 
+	return size1;
+}
+
+Datum
+batch_float8mi(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
+{
+	int size1 = batch_size[0];
+	for (int i = 0; i < size1; i++) {
+		result[i] = Float8GetDatum(DatumGetFloat8(arg1[i]) - DatumGetFloat8(arg2[i]));
+	}
+	return size1;
+}
+
+Datum
+batch_float8mul(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
+{
+    int size1 = batch_size[0];
+	for (int i = 0; i < size1; i++) {
+        result[i] = Float8GetDatum(DatumGetFloat8(arg1[i]) * DatumGetFloat8(arg2[i]));
+	}
+    return size1;
+}
+
+Datum
+batch_float8pl(Datum *arg1, Datum *arg2, int *batch_size, Datum *result)
+{
+	int size1 = batch_size[0];
+	for (int i = 0; i < size1; i++) {
+		result[i] = Float8GetDatum(DatumGetFloat8(arg1[i]) + DatumGetFloat8(arg2[i]));
+	}
 	return size1;
 }
 
