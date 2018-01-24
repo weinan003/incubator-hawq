@@ -209,7 +209,7 @@ setSubplanSliceId(SubPlan *subplan, EState *estate)
 	}
 }
 
-static bool isValidVectorizedPlan(Plan *node)
+static bool isValidVectorizedPlan(Plan *node, EState *estate)
 {
 	if (!vectorized_executor_enable)
 	{
@@ -221,10 +221,23 @@ static bool isValidVectorizedPlan(Plan *node)
 		return false;
 	}
 	Plan *outerPlan = outerPlan(node);
+	if(IsA(outerPlan, TableScan))
+    {
+        Relation rel = ExecOpenScanRelation(estate, ((Scan *)outerPlan)->scanrelid);
+        Assert(NULL != rel);
+        if(TableTypeParquet == getTableType(rel))
+        {
+            ExecCloseScanRelation(rel);
+            return true;
+        }
+        ExecCloseScanRelation(rel);
+    }
+
 	if (nodeTag(outerPlan) != T_ParquetScan)
 	{
 		return false;
 	}
+
 	/*
 	TableScan *ts = (TableScan *)outerPlan;
 	if (ts->ss.tableType != TableTypeParquet)
@@ -612,7 +625,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 			START_MEMORY_ACCOUNT(curMemoryAccount);
 			{
 
-				if (NULL != init_agg_hook && isValidVectorizedPlan(node)) {
+				if (NULL != init_agg_hook && isValidVectorizedPlan(node, estate)) {
 					result = (PlanState *) (*init_agg_hook)((Agg *) node,
 							   estate, eflags);
 				}
