@@ -10,6 +10,7 @@
 #include "executor/nodeAgg.h"
 #include "../backend/executor/execHHashagg.c"
 #include "vexecQual.h"
+#include "ao_reader.h"
 
 //#include "clhash.h"
 
@@ -263,8 +264,21 @@ vagg_retrieve_scalar(AggState *aggstate)
 		ExprContext *tmpcontext = aggstate->tmpcontext;
 		/* Reset the per-input-tuple context */
 		ResetExprContext(tmpcontext);
-		PlanState *outerPlan = outerPlanState(aggstate);
-		TupleTableSlot *outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+		ScanState *outerPlan = (ScanState*)(aggstate);
+		TupleTableSlot *outerslot = NULL;
+		if(outerPlanState(aggstate)->type == T_TableScanState &&
+				((ScanState*)outerPlanState(aggstate))->tableType == TableTypeAppendOnly)
+		{
+			outerslot = ExecAppendOnlyVScan(outerPlanState(aggstate));
+		}
+		else if(outerPlan->tableType == TableTypeParquet)
+		{
+			outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+		}
+		else
+		{
+			elog(ERROR,"TABLE TYPE DOES NOT SUPPORT IN VECTORIZATION EXECUTION YET");
+		}
 
 		if (TupIsNull(outerslot))
 		{
@@ -295,9 +309,10 @@ vagg_retrieve_scalar(AggState *aggstate)
 	Agg *node = (Agg*)aggstate->ss.ps.plan;
 	econtext->grouping = node->grouping;
 	econtext->group_id = node->rollupGSTimes;
+    //return aggstate->ss.ps.ps_ProjInfo->pi_slot;
 	/* Check the qual (HAVING clause). */
-	if (ExecQual(aggstate->ss.ps.qual, econtext, false))
-	{
+	//if (ExecQual(aggstate->ss.ps.qual, econtext, false))
+	//{
 		//Gpmon_M_Incr_Rows_Out(GpmonPktFromAggState(aggstate));
 		//CheckSendPlanStateGpmonPkt(&aggstate->ss.ps);
 
@@ -306,7 +321,7 @@ vagg_retrieve_scalar(AggState *aggstate)
 		 * and the representative input tuple.
 		 */
 		return ExecProject(aggstate->ss.ps.ps_ProjInfo, NULL);
-	}
+	//}
 	return NULL;
 }
 
@@ -396,21 +411,26 @@ TupleTableSlot *vagg_retrieve_hash_table(AggState *aggstate)
 			econtext->grouping = node->grouping;
 		}
 
+		//return aggstate->ss.ps.ps_ProjInfo->pi_slot;
 		/*
 		 * Check the qual (HAVING clause); if the group does not match, ignore
 		 * it and loop back to try to process another group.
 		 */
-		if (ExecQual(aggstate->ss.ps.qual, econtext, false))
-		{
-			/*
-			 * Form and return a projection tuple using the aggregate results
-			 * and the representative input tuple.	Note we do not support
-			 * aggregates returning sets ...
-			 */
-			Gpmon_M_Incr_Rows_Out(GpmonPktFromAggState(aggstate));
-			CheckSendPlanStateGpmonPkt(&aggstate->ss.ps);
-			return ExecProject(projInfo, NULL);
-		}
+
+		Gpmon_M_Incr_Rows_Out(GpmonPktFromAggState(aggstate));
+		CheckSendPlanStateGpmonPkt(&aggstate->ss.ps);
+		return ExecProject(projInfo, NULL);
+		//if (ExecQual(aggstate->ss.ps.qual, econtext, false))
+		//{
+		//	/*
+		//	 * Form and return a projection tuple using the aggregate results
+		//	 * and the representative input tuple.	Note we do not support
+		//	 * aggregates returning sets ...
+		//	 */
+		//	Gpmon_M_Incr_Rows_Out(GpmonPktFromAggState(aggstate));
+		//	CheckSendPlanStateGpmonPkt(&aggstate->ss.ps);
+		//	return ExecProject(projInfo, NULL);
+		//}
 	}
 
 	/* No more groups */

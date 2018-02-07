@@ -265,7 +265,8 @@ static bool isValidVectorizedPlanState(PlanState *node)
 		return false;
 	}
 	TableScanState *ts = (TableScanState *)outerPlan;
-	if (ts->ss.tableType != TableTypeParquet)
+	if (!(ts->ss.tableType == TableTypeParquet ||
+			ts->ss.tableType == TableTypeAppendOnly))
 	{
 		return false;
 	}
