@@ -264,14 +264,14 @@ vagg_retrieve_scalar(AggState *aggstate)
 		ExprContext *tmpcontext = aggstate->tmpcontext;
 		/* Reset the per-input-tuple context */
 		ResetExprContext(tmpcontext);
-		ScanState *outerPlan = (ScanState*)(aggstate);
+		PlanState *outerPlan = outerPlanState(aggstate);
 		TupleTableSlot *outerslot = NULL;
-		if(outerPlanState(aggstate)->type == T_TableScanState &&
-				((ScanState*)outerPlanState(aggstate))->tableType == TableTypeAppendOnly)
+
+		if(((ScanState*)outerPlan)->tableType == TableTypeAppendOnly)
 		{
-			outerslot = ExecAppendOnlyVScan(outerPlanState(aggstate));
+			outerslot = ExecAppendOnlyVScan((TableScanState *)(outerPlan));
 		}
-		else if(outerPlan->tableType == TableTypeParquet)
+		else if(((ScanState *)outerPlan)->tableType == TableTypeParquet)
 		{
 			outerslot = ExecParquetVScan((TableScanState *)outerPlan);
 		}

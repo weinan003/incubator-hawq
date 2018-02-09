@@ -15,7 +15,6 @@ static int ParquetRowGroupReader_ScanNextTupleBatch(TupleDesc tupDesc,
 							bool *projs,
 							TupleTableSlot *slot);
 
-static TupleTableSlot *ExecVProject(TupleTableSlot *orig_slot, ProjectionInfo *projInfo, ExprDoneCond *isDone);
 
 static TupleBatch globalTB = NULL;
 

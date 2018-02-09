@@ -1,8 +1,19 @@
 #include "ao_reader.h"
 #include "tuple_batch.h"
+#include "parquet_reader.h"
+#include "nodes/execnodes.h"
+#include "debug.h"
+#include "vexecQual.h"
+#include <assert.h>
+
+static TupleBatch ao_globalTB;
 static TupleTableSlot *
 AppendOnlyVScan(ScanState *scanState);
 
+static TupleTableSlot *
+ExecAppendOnlyScanRelation(ScanState *scanState);
+
+ParquetScanOpaqueData *opaque = NULL;
 TupleTableSlot *ExecAppendOnlyVScan(ScanState *node)
 {
     ScanState *scanState = node;
@@ -11,87 +22,169 @@ TupleTableSlot *ExecAppendOnlyVScan(ScanState *node)
         scanState->scan_state == SCAN_DONE)
     {
         BeginScanAppendOnlyRelation(scanState);
+
+        opaque = palloc(sizeof(ParquetScanOpaqueData));
+        opaque->ncol = scanState->ss_currentRelation->rd_att->natts;
+        opaque->proj = palloc0(sizeof(bool) * opaque->ncol);
+
+        GetNeededColumnsForScan((Node *)scanState->ps.plan->targetlist, opaque->proj, opaque->ncol);
+        GetNeededColumnsForScan((Node *)scanState->ps.plan->qual, opaque->proj, opaque->ncol);
+
+        int i = 0;
+        for (i = 0; i < opaque->ncol; i++)
+            if (opaque->proj[i]) break;
+
+        if (i == opaque->ncol)
+            opaque->proj[0] = true;
+
+        ao_globalTB = createMaxTupleBatch(opaque->ncol,
+                                          scanState->ss_currentRelation->rd_att,
+                                          opaque->proj);
     }
+    resetTupleBatch(ao_globalTB);
+    scanState->ss_ScanTupleSlot->PRIVATE_tts_data = (void *)ao_globalTB;
 
-    MemTuple *batch = AppendOnlyVScan(scanState);
-    //TODO:reorganize MemTupe To TupleBatch structure
+    TupleTableSlot *slot = ExecAppendOnlyScanRelation(scanState);
 
-    if (batchTuple[0] == NULL && !scanState->ps.delayEagerFree)
+    if (!TupIsNull(slot))
+    {
+        //Gpmon_M_Incr_Rows_Out(GpmonPktFromTableScanState(node));
+        //CheckSendPlanStateGpmonPkt(&scanState->ps);
+    }
+    else if (!scanState->ps.delayEagerFree)
     {
         EndScanAppendOnlyRelation(scanState);
+        //TODO:
+        //clean opaque
+        //clean globalTB
     }
-
-    return NULL;
+    return slot;
 }
 
-static MemTuple *
+static TupleTableSlot *
+ExecAppendOnlyScanRelation(ScanState *node)
+{
+    //TupleTableSlot *slot = AppendOnlyVScan(scanState);
+    ExprContext *econtext;
+    List       *qual;
+    ProjectionInfo *projInfo;
+
+    /*
+     * Fetch data from node
+     */
+    qual = node->ps.qual;
+    projInfo = node->ps.ps_ProjInfo;
+
+    /*
+     * If we have neither a qual to check nor a projection to do, just skip
+     * all the overhead and return the raw scan tuple.
+     */
+    if (!qual && !projInfo)
+        return AppendOnlyVScan(node);
+
+    /*
+     * Reset per-tuple memory context to free any expression evaluation
+     * storage allocated in the previous tuple cycle.
+     */
+    econtext = node->ps.ps_ExprContext;
+    ResetExprContext(econtext);
+
+    /*
+     * get a tuple from the access method loop until we obtain a tuple which
+     * passes the qualification.
+     */
+    for (;;)
+    {
+        TupleTableSlot *slot;
+
+        CHECK_FOR_INTERRUPTS();
+
+        slot = AppendOnlyVScan(node);
+
+        /*
+         * if the slot returned by the accessMtd contains NULL, then it means
+         * there is nothing more to scan so we just return an empty slot,
+         * being careful to use the projection result slot so it has correct
+         * tupleDesc.
+         */
+        if (TupIsNull(slot))
+        {
+            assert(1);
+            if (projInfo)
+                return ExecClearTuple(projInfo->pi_slot);
+            else
+                return slot;
+        }
+
+        /*
+         * place the current tuple into the expr context
+         */
+        econtext->ecxt_scantuple = slot;
+
+        /*
+         * check that the current tuple satisfies the qual-clause
+         *
+         * check for non-nil qual here to avoid a function call to ExecQual()
+         * when the qual is nil ... saves only a few cycles, but they add up
+         * ...
+         */
+        if (!qual || VExecQual(qual, econtext, false))
+        {
+            /*
+             * Found a satisfactory scan tuple.
+             */
+            if (projInfo)
+            {
+                /*
+                 * Form a projection tuple, store it in the result tuple slot
+                 * and return it.
+                 */
+                return ExecVProject(slot, projInfo, NULL);
+            }
+            else
+            {
+                /*
+                 * Here, we aren't projecting, so just return scan tuple.
+                 */
+                return slot;
+            }
+        }
+
+        /*
+         * Tuple fails qual, so free per-tuple memory and try again.
+         */
+        ResetExprContext(econtext);
+    }
+
+}
+
+static TupleTableSlot *
 AppendOnlyVScan(ScanState *scanState)
 {
-    Assert(IsA(scanState, TableScanState) ||
-           IsA(scanState, DynamicTableScanState));
-    AppendOnlyScanState *node = (AppendOnlyScanState *)scanState;
+    TupleTableSlot *slot = scanState->ss_ScanTupleSlot;
+    TupleBatch tb = (TupleBatch)slot->PRIVATE_tts_data;
+    int row = 0;
 
-    AppendOnlyScanDesc scandesc;
-    Index		scanrelid;
-    EState	   *estate;
-    ScanDirection direction;
-    //这里面的slot实际上是完全无用的，存在的意义只是为了可以调用原有的接口
-    //如果在后面做的话，我们需要自己写一版可以不将MemTuple存入slot中的版本
-    TupleTableSlot *slot;
-
-    Assert((node->ss.scan_state & SCAN_SCAN) != 0);
-    /*
-     * get information from the estate and scan state
-     */
-    estate = node->ss.ps.state;
-    scandesc = node->aos_ScanDesc;
-    scanrelid = ((AppendOnlyScan *) node->ss.ps.plan)->scan.scanrelid;
-    direction = estate->es_direction;
-    slot = node->ss.ss_ScanTupleSlot;
-
-    MemTuple* batch = palloc0(sizeof(MemTuple) * BATCH_SIZE);
-    for(int i = 0;i < BATCH_SIZE; ++i)
+    for(;row < BATCH_SIZE;row ++)
     {
-        batch[i] = appendonly_getnext(scandesc,direction,slot);
-    }
+        AppendOnlyScanNext(scanState);
 
-    return batch;
+        slot = scanState->ss_ScanTupleSlot;
+        if(TupIsNull(slot))
+            break;
+
+        for(int i = 0;i < opaque->ncol; i ++)
+        {
+            if(opaque->proj[i])
+                tb->columnDataArray[i]->values[row] = slot_getattr(slot,i + 1, &(tb->columnDataArray[i]->nulls[row]));
+        }
+
+        VarBlockHeader *header = ((AppendOnlyScanState*)scanState)->aos_ScanDesc->executorReadBlock.varBlockReader.header;
+        if(row + 1 == VarBlockGet_itemCount(header))
+            break;
+    }
+    tb->nrow = row + 1;
+    //TupSetVirtualTupleNValid(slot, opaque->ncol);
+    return slot;
 }
 
-
-//static MemTuple *
-//ExecAppendOnlyScanRelation(AppendOnlyScanState *node)
-//{
-//
-//    ExprContext *econtext;
-//    List        *qual;
-//    int         tupleNum;
-//    ProjectionInfo *projInfo;
-//    TupleTableSlot *slot;
-//    AppendOnlyScanDesc desc;
-//    MemTuple *batchTuple;
-//    VarBlockHeader       *header;
-//    /*
-//     * Fetch data from node
-//     */
-//    qual = node->ss.ps.qual;
-//    projInfo = node->ss.ps.ps_ProjInfo;
-//    desc = node->aos_ScanDesc;
-//    slot = node->ss.ss_ScanTupleSlot;
-//
-//    while(!getNextBlock(desc))
-//        if(desc->aos_done_all_splits) return NULL;
-//
-//    header = desc->executorReadBlock.varBlockReader.header;
-//    tupleNum = VarBlockGet_itemCount(header);
-//
-//    batchTuple = palloc0(sizeof(MemTuple*) * tupleNum);
-//
-//    for(int i = 0;i < tupleNum;i ++)
-//    {
-//        batchTuple[i] = AppendOnlyExecutorReadBlock_ScanNextTuple(&desc->executorReadBlock,desc->aos_nkeys,desc->aos_key,slot);
-//    }
-//    slot->PRIVATE_tts_memtuple = tupleNum;
-//        //return AppendOnlyScanNext(node);
-//    return batchTuple;
-//}

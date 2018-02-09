@@ -17,5 +17,6 @@
 #include "nodes/print.h"
 
 TupleTableSlot *ExecParquetVScan(TableScanState *node);
+TupleTableSlot *ExecVProject(TupleTableSlot *orig_slot, ProjectionInfo *projInfo, ExprDoneCond *isDone);
 
 #endif
