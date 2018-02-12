@@ -233,7 +233,8 @@ static bool isValidVectorizedPlan(Plan *node, EState *estate)
         ExecCloseScanRelation(rel);
     }
 
-	if (nodeTag(outerPlan) != T_ParquetScan)
+	if (!(nodeTag(outerPlan) == T_ParquetScan ||
+			nodeTag(outerPlan) == T_AppendOnlyScan))
 	{
 		return false;
 	}

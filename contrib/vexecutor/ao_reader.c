@@ -179,11 +179,13 @@ AppendOnlyVScan(ScanState *scanState)
                 tb->columnDataArray[i]->values[row] = slot_getattr(slot,i + 1, &(tb->columnDataArray[i]->nulls[row]));
         }
 
-        VarBlockHeader *header = ((AppendOnlyScanState*)scanState)->aos_ScanDesc->executorReadBlock.varBlockReader.header;
-        if(row + 1 == VarBlockGet_itemCount(header))
+        AppendOnlyScanDesc scanDesc = ((AppendOnlyScanState*)scanState)->aos_ScanDesc;
+        VarBlockHeader *header = scanDesc->executorReadBlock.varBlockReader.header;
+        if(row + 1 == VarBlockGet_itemCount(header)
+          && scanDesc->aos_splits_processed == list_length(scanDesc->splits))
             break;
     }
-    tb->nrow = row + 1;
+    tb->nrow = row == BATCH_SIZE ? row : row + 1;
     //TupSetVirtualTupleNValid(slot, opaque->ncol);
     return slot;
 }

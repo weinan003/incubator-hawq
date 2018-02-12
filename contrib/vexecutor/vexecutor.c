@@ -823,7 +823,18 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 	else
 	{
-		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+		if(((ScanState*)outerPlan)->tableType == TableTypeAppendOnly)
+		{
+			outerslot = ExecAppendOnlyVScan((TableScanState *)(outerPlan));
+		}
+		else if(((ScanState *)outerPlan)->tableType == TableTypeParquet)
+		{
+			outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+		}
+		else
+		{
+			elog(ERROR,"TABLE TYPE DOES NOT SUPPORT IN VECTORIZATION EXECUTION YET");
+		}
 	}
 
 	hashtable->pass = 0;
@@ -998,7 +1009,19 @@ vagg_hash_initial_pass(AggState *aggstate)
 		}
 
         ResetExprContext(tmpcontext);
-		outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+
+		if(((ScanState*)outerPlan)->tableType == TableTypeAppendOnly)
+		{
+			outerslot = ExecAppendOnlyVScan((TableScanState *)(outerPlan));
+		}
+		else if(((ScanState *)outerPlan)->tableType == TableTypeParquet)
+		{
+			outerslot = ExecParquetVScan((TableScanState *)outerPlan);
+		}
+		else
+		{
+			elog(ERROR,"TABLE TYPE DOES NOT SUPPORT IN VECTORIZATION EXECUTION YET");
+		}
 	}
 
 	if (GET_TOTAL_USED_SIZE(hashtable) > hashtable->mem_used)
