@@ -181,9 +181,15 @@ AppendOnlyVScan(ScanState *scanState)
 
         AppendOnlyScanDesc scanDesc = ((AppendOnlyScanState*)scanState)->aos_ScanDesc;
         VarBlockHeader *header = scanDesc->executorReadBlock.varBlockReader.header;
-        if(row + 1 == VarBlockGet_itemCount(header)
-          && scanDesc->aos_splits_processed == list_length(scanDesc->splits))
-            break;
+
+        //if(row + 1 == VarBlockGet_itemCount(header))
+        //    break;
+        if (scanDesc->aos_splits_processed == list_length(scanDesc->splits) &&
+            scanDesc->executorReadBlock.currentItemCount == scanDesc->executorReadBlock.readerItemCount)
+        {
+            if (scanDesc->executorReadBlock.varBlockReader.nextIndex >= VarBlockGet_itemCount(header))
+                break;
+        }
     }
     tb->nrow = row == BATCH_SIZE ? row : row + 1;
     //TupSetVirtualTupleNValid(slot, opaque->ncol);
