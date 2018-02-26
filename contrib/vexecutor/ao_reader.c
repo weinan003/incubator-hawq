@@ -54,9 +54,9 @@ TupleTableSlot *ExecAppendOnlyVScan(ScanState *node)
     else if (!scanState->ps.delayEagerFree)
     {
         EndScanAppendOnlyRelation(scanState);
-        //TODO:
-        //clean opaque
-        //clean globalTB
+	    pfree(opaque->proj);
+        pfree(opaque);
+	    opaque = NULL;
     }
     return slot;
 }
@@ -176,7 +176,12 @@ AppendOnlyVScan(ScanState *scanState)
         for(int i = 0;i < opaque->ncol; i ++)
         {
             if(opaque->proj[i])
+            {
                 tb->columnDataArray[i]->values[row] = slot_getattr(slot,i + 1, &(tb->columnDataArray[i]->nulls[row]));
+	            if(!slot->tts_mt_bind->tupdesc->attrs[i]->attbyval)
+                    tb->columnDataArray[i]->values[row] = datumCopy(tb->columnDataArray[i]->values[row],slot->tts_mt_bind->tupdesc->attrs[i]->attbyval,slot->tts_mt_bind->tupdesc->attrs[i]->attlen);
+
+            }
         }
 
         AppendOnlyScanDesc scanDesc = ((AppendOnlyScanState*)scanState)->aos_ScanDesc;

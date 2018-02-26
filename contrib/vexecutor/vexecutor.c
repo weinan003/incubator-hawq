@@ -850,9 +850,9 @@ vagg_hash_initial_pass(AggState *aggstate)
 	if (tb->nvalid <= 0)
 		nvalid = tb->ncol;
 	TupSetVirtualTupleNValid(tb->rowSlot, nvalid);
-	for (int i=0;i<nvalid;i++)
-		tb->rowSlot->PRIVATE_tts_isnull[i] = false;
-
+	memset(tb->rowSlot->PRIVATE_tts_isnull,false,nvalid);
+	//for (int i=0;i<nvalid;i++)
+	//	tb->rowSlot->PRIVATE_tts_isnull[i] = false;
 
 	while(true)
 	{
