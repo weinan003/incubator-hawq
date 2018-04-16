@@ -27,6 +27,7 @@
 #include "catalog/catquery.h"
 #include "cdb/cdbvars.h"
 #include "execVScan.h"
+#include "nodeVMotion.h"
 
 PG_MODULE_MAGIC;
 int BATCHSIZE = 1024;
@@ -173,6 +174,9 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,Memory
 					}
 						END_MEMORY_ACCOUNT();
 				break;
+			case T_MotionState:
+				((VectorizedState *)node->vectorized)->vectorized = true;
+				break;
 			default:
 				((VectorizedState *)node->vectorized)->vectorized = false;
 				break;
@@ -191,6 +195,9 @@ static TupleTableSlot* VExecProcNode(PlanState *node)
         case T_TableScanState:
 			result = ExecTableVScanVirtualLayer((TableScanState*)node);
             break;
+		case T_MotionState:
+			result = ExecVMotion((MotionState *) node);
+			break;
         default:
             break;
     }

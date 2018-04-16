@@ -13,6 +13,7 @@
 #define NODEMOTION_H
 
 #include "nodes/execnodes.h"
+#include "cdb/cdbhash.h"
 
 extern int	ExecCountSlotsMotion(Motion *node);
 extern MotionState *ExecInitMotion(Motion *node, EState *estate, int eflags);
@@ -28,8 +29,11 @@ extern bool isMotionGatherToMaster(const Motion *m);
 extern bool isMotionGatherToSegment(const Motion *m);
 extern bool isMotionRedistributeFromMaster(const Motion *m);
 
+extern void setMotionStatsForGpmon(MotionState *node);
+extern void doSendEndOfStream(Motion * motion, MotionState * node);
+extern uint32 evalHashKey(ExprContext *econtext, List *hashkeys, List *hashtypes, CdbHash * h);
 
-enum 
+enum
 {
 	GPMON_MOTION_BYTES_SENT = GPMON_QEXEC_M_NODE_START,
 	GPMON_MOTION_TOTAL_ACK_TIME,
