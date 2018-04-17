@@ -1,5 +1,6 @@
 
 #include "nodeVMotion.h"
+#include "tuplebatch.h"
 /*=========================================================================
  * FUNCTIONS PROTOTYPES
  */
@@ -7,6 +8,9 @@ static TupleTableSlot *execVMotionSender(MotionState * node);
 static TupleTableSlot *execVMotionUnsortedReceiver(MotionState * node);
 
 static void doSendTupleBatch(Motion * motion, MotionState * node, TupleTableSlot *outerTupleSlot);
+static SendReturnCode
+SendTupleBatch(MotionLayerState *mlStates, ChunkTransportState *transportStates,
+               int16 motNodeID, TupleBatch tuplebatch, int16 targetRoute);
 /*=========================================================================
  */
 
@@ -53,6 +57,7 @@ ExecVMotion(MotionState * node)
 
         if (motion->sendSorted)
         {
+            elog(WARNING,"VMOTION DONOT SUPPORT SORT YET");
             if (gp_enable_motion_mk_sort)
                 (void) 0;//TODO:: tuple = execMotionSortedReceiver_mk(node);
             else
@@ -162,7 +167,6 @@ execVMotionSender(MotionState * node)
         else
         {
             doSendTupleBatch(motion, node, outerTupleSlot);
-            /* doSendTuple() may have set node->stopRequested as a side-effect */
 
             Gpmon_M_Incr_Rows_Out(GpmonPktFromMotionState(node));
             setMotionStatsForGpmon(node);
@@ -272,19 +276,17 @@ doSendTupleBatch(Motion * motion, MotionState * node, TupleTableSlot *outerTuple
         Assert(!is_null);
     }
 
-    tuple = ExecFetchSlotGenericTuple(outerTupleSlot, true);
 
     /* send the tuple out. */
-    sendRC = SendTuple(node->ps.state->motionlayer_context,
-                       node->ps.state->interconnect_context,
-                       motion->motionID,
-                       tuple,
-                       targetRoute);
+    sendRC = SendTupleBatch(node->ps.state->motionlayer_context,
+                            node->ps.state->interconnect_context,
+                            motion->motionID,
+                            outerTupleSlot->PRIVATE_tb,
+                            targetRoute);
 
     Assert(sendRC == SEND_COMPLETE || sendRC == STOP_SENDING);
     if (sendRC == SEND_COMPLETE)
         node->numTuplesToAMS++;
-
     else
         node->stopRequested = true;
 
@@ -351,7 +353,8 @@ TupleTableSlot *execVMotionUnsortedReceiver(MotionState * node)
 
     /* store it in our result slot and return this. */
     slot = node->ps.ps_ResultTupleSlot;
-    slot = ExecStoreGenericTuple(tuple, slot, true /* shouldFree */);
+    slot->PRIVATE_tb = tuple;
+    //slot = ExecStoreGenericTuple(tuple, slot, true /* shouldFree */);
 
 #ifdef CDB_MOTION_DEBUG
     if (node->numTuplesToParent <= 20)
@@ -370,4 +373,91 @@ TupleTableSlot *execVMotionUnsortedReceiver(MotionState * node)
 #endif
 
     return slot;
+}
+
+/*
+ * Function:  SendTupleBatch - Sends a batch of tuples to the AMS layer.
+ */
+SendReturnCode
+SendTupleBatch(MotionLayerState *mlStates,
+          ChunkTransportState *transportStates,
+          int16 motNodeID,
+          TupleBatch tuplebatch,
+          int16 targetRoute)
+{
+    MotionNodeEntry *pMNEntry;
+    TupleChunkListData tcList;
+    MemoryContext oldCtxt;
+    SendReturnCode rc;
+
+    /*
+     * Analyze tools.  Do not send any thing if this slice is in the bit mask
+     */
+    if (gp_motion_slice_noop != 0 && (gp_motion_slice_noop & (1 << currentSliceId)) != 0)
+        return SEND_COMPLETE;
+
+    /*
+     * Pull up the motion node entry with the node's details.  This includes
+     * details that affect sending, such as whether the motion node needs to
+     * include backup segment-dbs.
+     */
+    pMNEntry = getMotionNodeEntry(mlStates, motNodeID, "SendTuple");
+
+    /*
+    if (targetRoute != BROADCAST_SEGIDX)
+    {
+        struct directTransportBuffer b;
+
+        getTransportDirectBuffer(transportStates, motNodeID, targetRoute, &b);
+
+        if (b.pri != NULL && b.prilen > TUPLE_CHUNK_HEADER_SIZE)
+        {
+            int sent = 0;
+
+            sent = SerializeTupleDirect(tuple, &pMNEntry->ser_tup_info, &b);
+            if (sent > 0)
+            {
+                putTransportDirectBuffer(transportStates, motNodeID, targetRoute, sent);
+
+                tcList.num_chunks = 1;
+                tcList.serialized_data_length = sent;
+
+                statSendTuple(mlStates, pMNEntry, &tcList);
+
+                return SEND_COMPLETE;
+            }
+        }
+    }
+    */
+
+    /* Create and store the serialized form, and some stats about it. */
+    oldCtxt = MemoryContextSwitchTo(mlStates->motion_layer_mctx);
+
+    MemTuple tuple = palloc0(sizeof(MemTuple) + 1024);
+    for(int i = 0;i < 1024;i ++)
+        tuple->PRIVATE_mt_bits[i] = (char)(i % 255);
+    memtuple_set_size(tuple,NULL,sizeof(MemTuple) + 1024);
+    SerializeTupleIntoChunks(tuple, &pMNEntry->ser_tup_info, &tcList);
+    pfree(tuple);
+
+    MemoryContextSwitchTo(oldCtxt);
+
+    /* do the send. */
+    if (!SendTupleChunkToAMS(mlStates, transportStates, motNodeID, targetRoute, tcList.p_first))
+    {
+        pMNEntry->stopped = true;
+        rc = STOP_SENDING;
+    }
+    else
+    {
+        /* update stats */
+        statSendTuple(mlStates, pMNEntry, &tcList);
+
+        rc = SEND_COMPLETE;
+    }
+
+    /* cleanup */
+    clearTCList(&pMNEntry->ser_tup_info.chunkCache, &tcList);
+
+    return rc;
 }

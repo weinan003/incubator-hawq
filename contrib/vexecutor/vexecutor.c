@@ -175,7 +175,8 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,Memory
 						END_MEMORY_ACCOUNT();
 				break;
 			case T_MotionState:
-				((VectorizedState *)node->vectorized)->vectorized = true;
+				if(!((Motion*)plan)->sendSorted)
+					((VectorizedState *)node->vectorized)->vectorized = true;
 				break;
 			default:
 				((VectorizedState *)node->vectorized)->vectorized = false;
