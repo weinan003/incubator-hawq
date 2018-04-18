@@ -115,9 +115,9 @@ VirtualNodeProc(ScanState* state,TupleTableSlot *slot){
 
     for(int i = 0;i < tb->ncols;i ++)
     {
-        vheader *header = tb->datagroup[i];
-        GetVFunc(GetVtype(header->elemtype))->gettypevalue(header,tb->iter,slot->PRIVATE_tts_values + i);
-        slot->PRIVATE_tts_isnull[i] = header->isnull[tb->iter];
+        vtype *vt = tb->datagroup[i];
+        slot->PRIVATE_tts_values[i] = vt->values[tb->iter];
+        slot->PRIVATE_tts_isnull[i] = vt->isnull[tb->iter];
     }
     tb->iter ++;
     ExecStoreVirtualTuple(slot);

@@ -39,7 +39,6 @@ static int MAXBATCHSIZE = 4096;
 static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,MemoryAccount* ptr);
 static TupleTableSlot* VExecProcNode(PlanState *node);
 static bool VExecEndNode(PlanState *node);
-static Oid GetNType(Oid vtype);
 extern int currentSliceId;
 
 /*
@@ -55,7 +54,7 @@ _PG_init(void)
 	vmthd.ExecInitNode_Hook = VExecInitNode;
 	vmthd.ExecProcNode_Hook = VExecProcNode;
 	vmthd.ExecEndNode_Hook = VExecEndNode;
-	vmthd.GetNType = GetNType;
+	vmthd.GetNType = GetNtype;
 	DefineCustomBoolVariable("vectorized_executor_enable",
 	                         gettext_noop("enable vectorized executor"),
 	                         NULL,
@@ -100,7 +99,7 @@ static void backportTupleDescriptor(PlanState* ps,TupleDesc td)
 	Form_pg_type  typeForm;
 	for(int i = 0;i < td->natts; ++i)
 	{
-		oidtypeid = GetVFunc(td->attrs[i]->atttypid)->ntype;
+		oidtypeid = GetNtype(td->attrs[i]->atttypid);
 
 		pcqCtx = caql_beginscan(
 				NULL,
@@ -157,27 +156,33 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,Memory
 		((VectorizedState*)(subState->vectorized))->parent = node;
 	}
 
-	if(Gp_role != GP_ROLE_DISPATCH)
+//	if(Gp_role != GP_ROLE_DISPATCH)
 	{
 		switch (nodeTag(node) )
 		{
 			case T_AppendOnlyScan:
 			case T_ParquetScan:
 			case T_TableScanState:
-				START_MEMORY_ACCOUNT(curMemoryAccount);
-					{
-						TupleDesc td = ((TableScanState *)node)->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-						((TableScanState *)node)->ss.ss_ScanTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
-						node->ps_ResultTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
-						/* if V->N */
-						backportTupleDescriptor(node,node->ps_ResultTupleSlot->tts_tupleDescriptor);
-					}
-						END_MEMORY_ACCOUNT();
+				if(((TableScanState *)node)->ss.tableType != TableTypeHeap)
+				{
+					START_MEMORY_ACCOUNT(curMemoryAccount);
+						{
+							TupleDesc td = ((TableScanState *)node)->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+							((TableScanState *)node)->ss.ss_ScanTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
+							node->ps_ResultTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
+							/* if V->N */
+							backportTupleDescriptor(node,node->ps_ResultTupleSlot->tts_tupleDescriptor);
+						}
+							END_MEMORY_ACCOUNT();
+				} else
+					((VectorizedState *)node->vectorized)->vectorized = false;
 				break;
+                /*
 			case T_MotionState:
-				if(!((Motion*)plan)->sendSorted)
+				if(!((Motion*)plan)->sendSorted && ((Motion*)plan)->motionType == MOTIONTYPE_FIXED)
 					((VectorizedState *)node->vectorized)->vectorized = true;
 				break;
+                 */
 			default:
 				((VectorizedState *)node->vectorized)->vectorized = false;
 				break;
@@ -189,6 +194,9 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,Memory
 static TupleTableSlot* VExecProcNode(PlanState *node)
 {
     TupleTableSlot* result = NULL;
+	if(!((VectorizedState *)node->vectorized)->vectorized)
+		return NULL;
+
     switch(nodeTag(node))
     {
         case T_ParquetScanState:
@@ -196,9 +204,11 @@ static TupleTableSlot* VExecProcNode(PlanState *node)
         case T_TableScanState:
 			result = ExecTableVScanVirtualLayer((TableScanState*)node);
             break;
+			/*
 		case T_MotionState:
 			result = ExecVMotion((MotionState *) node);
 			break;
+			 */
         default:
             break;
     }
@@ -246,8 +256,3 @@ HasVecExecOprator(NodeTag tag)
 	return result;
 }
 
-static Oid GetNType(Oid vtype)
-{
-	const vFuncMap* vf = GetVFunc(vtype);
-	return vf == NULL ? InvalidOid : vf->ntype;
-}

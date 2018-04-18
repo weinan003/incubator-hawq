@@ -19,9 +19,6 @@
 #include "postgres.h"
 #include "tuplebatch.h"
 
-static size_t vtypeSize(vheader *vh);
-static size_t tbSerializationSize(TupleBatch tb);
-
 TupleBatch tbGenerate(int colnum,int batchsize)
 {
     Assert(colnum > 0 && batchsize > 0);
@@ -68,19 +65,15 @@ void tbCreateColumn(TupleBatch tb,int colid,Oid type)
         return;
     int bs = tb->batchsize;
 
-    tb->datagroup[colid] = GetVFunc(type)->vtbuild((bs));
+    tb->datagroup[colid] = buildvtype(type,bs,tb->skip);
 }
 
-void tbfreeColumn(vheader** vh,int colid)
+void tbfreeColumn(vtype** vh,int colid)
 {
-    GetVFunc(GetVtype(vh[colid]->elemtype))->vtfree(&vh[colid]);
+    destroyvtype(&vh[colid]);
 }
 
-static size_t vtypeSize(vheader *vh)
-{
-    return GetVFunc(GetVtype(vh->elemtype))->vtsize(vh);
-}
-
+/*
 static size_t
 tbSerializationSize(TupleBatch tb)
 {
@@ -104,7 +97,6 @@ tbSerializationSize(TupleBatch tb)
     }
     return len;
 }
-
 unsigned char *
 tbSerialization(TupleBatch tb )
 {
@@ -183,3 +175,4 @@ TupleBatch tbDeserialization(unsigned char *buffer)
 
     return tb;
 }
+*/
