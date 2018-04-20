@@ -22,17 +22,9 @@
 #include "utils/builtins.h"
 #include "vtype.h"
 
-#define MAX_NUM_LEN 32
+#define MAX_NUM_LEN 64
 extern int BATCHSIZE;
-static char canary = 0xe7;
-#define CANARYSIZE  sizeof(canary)
-#define VTYPEHEADERSZ (sizeof(vtype))
-#define VDATUMSZ(dim) (sizeof(Datum) * dim)
-#define ISNULLSZ(dim) (sizeof(bool) * dim)
-
-#define VTYPESIZE(dim) (VTYPEHEADERSZ + VDATUMSZ(dim) + CANARYSIZE + ISNULLSZ(dim))
-#define CANARYOFFSET(vtype) ((char*)(vtype + VTYPEHEADERSZ + VDATUMSZ(dim)))
-#define ISNULLOFFSET(vtype) ((bool*)(vtype + VTYPEHEADERSZ + VDATUMSZ(dim) + CANARYSIZE))
+const char canary = 0xe7;
 
 vtype* buildvtype(Oid elemtype,int dim,bool *skip)
 {

@@ -177,12 +177,10 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,Memory
 				} else
 					((VectorizedState *)node->vectorized)->vectorized = false;
 				break;
-                /*
 			case T_MotionState:
 				if(!((Motion*)plan)->sendSorted && ((Motion*)plan)->motionType == MOTIONTYPE_FIXED)
 					((VectorizedState *)node->vectorized)->vectorized = true;
 				break;
-                 */
 			default:
 				((VectorizedState *)node->vectorized)->vectorized = false;
 				break;
@@ -204,11 +202,9 @@ static TupleTableSlot* VExecProcNode(PlanState *node)
         case T_TableScanState:
 			result = ExecTableVScanVirtualLayer((TableScanState*)node);
             break;
-			/*
 		case T_MotionState:
 			result = ExecVMotion((MotionState *) node);
 			break;
-			 */
         default:
             break;
     }

@@ -29,6 +29,14 @@ typedef struct vtype {
     Datum   values[0];
 }vtype;
 
+
+#define CANARYSIZE  sizeof(char)
+#define VTYPEHEADERSZ (sizeof(vtype))
+#define VDATUMSZ(dim) (sizeof(Datum) * dim)
+#define ISNULLSZ(dim) (sizeof(bool) * dim)
+#define VTYPESIZE(dim) (VTYPEHEADERSZ + VDATUMSZ(dim) + CANARYSIZE + ISNULLSZ(dim))
+#define CANARYOFFSET(vtype) ((char*)(vtype + VTYPEHEADERSZ + VDATUMSZ(dim)))
+#define ISNULLOFFSET(vtype) ((bool*)(vtype + VTYPEHEADERSZ + VDATUMSZ(vtype->dim) + CANARYSIZE))
 #define VTYPE_STURCTURE(type) typedef struct vtype v##type;
 
 /*

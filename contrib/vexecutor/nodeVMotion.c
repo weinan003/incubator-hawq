@@ -30,12 +30,6 @@ ExecVMotion(MotionState * node)
     if (node->mstype == MOTIONSTATE_RECV)
     {
         TupleTableSlot *tuple;
-#ifdef MEASURE_MOTION_TIME
-        struct timeval startTime;
-		struct timeval stopTime;
-
-		gettimeofday(&startTime, NULL);
-#endif
 
         if (node->ps.state->active_recv_id >= 0)
         {
@@ -132,24 +126,6 @@ execVMotionSender(MotionState * node)
         outerNode = outerPlanState(node);
         outerTupleSlot = ExecProcNode(outerNode);
 
-#ifdef MEASURE_MOTION_TIME
-        gettimeofday(&time2, NULL);
-
-		node->otherTime.tv_sec += time2.tv_sec - time1.tv_sec;
-		node->otherTime.tv_usec += time2.tv_usec - time1.tv_usec;
-
-		while (node->otherTime.tv_usec < 0)
-		{
-			node->otherTime.tv_usec += 1000000;
-			node->otherTime.tv_sec--;
-		}
-
-		while (node->otherTime.tv_usec >= 1000000)
-		{
-			node->otherTime.tv_usec -= 1000000;
-			node->otherTime.tv_sec++;
-		}
-#endif
         /* Running in diagnostic mode, we just drop all tuples. */
         if (Gp_interconnect_type == INTERCONNECT_TYPE_NIL)
         {
@@ -276,7 +252,6 @@ doSendTupleBatch(Motion * motion, MotionState * node, TupleTableSlot *outerTuple
         Assert(!is_null);
     }
 
-
     /* send the tuple out. */
     sendRC = SendTupleBatch(node->ps.state->motionlayer_context,
                             node->ps.state->interconnect_context,
@@ -289,24 +264,6 @@ doSendTupleBatch(Motion * motion, MotionState * node, TupleTableSlot *outerTuple
         node->numTuplesToAMS++;
     else
         node->stopRequested = true;
-
-
-#ifdef CDB_MOTION_DEBUG
-    if (sendRC == SEND_COMPLETE && node->numTuplesToAMS <= 20)
-	{
-		StringInfoData  buf;
-
-		initStringInfo(&buf);
-		appendStringInfo(&buf, "   motion%-3d snd->%-3d, %5d.",
-				motion->motionID,
-				targetRoute,
-				node->numTuplesToAMS);
-		formatTuple(&buf, tuple, ExecGetResultType(&node->ps),
-				node->outputFunArray);
-		elog(DEBUG3, buf.data);
-		pfree(buf.data);
-	}
-#endif
 }
 
 TupleTableSlot *execVMotionUnsortedReceiver(MotionState * node)
@@ -338,10 +295,6 @@ TupleTableSlot *execVMotionUnsortedReceiver(MotionState * node)
 
     if (recvRC == END_OF_STREAM)
     {
-#ifdef CDB_MOTION_DEBUG
-        if (gp_log_interconnect >= GPVARS_VERBOSITY_DEBUG)
-		    elog(DEBUG4, "motionID=%d saw end of stream", motion->motionID);
-#endif
         Assert(node->numTuplesFromAMS == node->numTuplesToParent);
         Assert(node->numTuplesFromChild == 0);
         Assert(node->numTuplesToAMS == 0);
@@ -353,25 +306,9 @@ TupleTableSlot *execVMotionUnsortedReceiver(MotionState * node)
 
     /* store it in our result slot and return this. */
     slot = node->ps.ps_ResultTupleSlot;
-    slot->PRIVATE_tb = tuple;
-    //slot = ExecStoreGenericTuple(tuple, slot, true /* shouldFree */);
+    slot->PRIVATE_tb = tbDeserialization(((MemTuple)tuple)->PRIVATE_mt_bits);
 
-#ifdef CDB_MOTION_DEBUG
-    if (node->numTuplesToParent <= 20)
-    {
-        StringInfoData  buf;
-
-        initStringInfo(&buf);
-        appendStringInfo(&buf, "   motion%-3d rcv      %5d.",
-                         motion->motionID,
-                         node->numTuplesToParent);
-        formatTuple(&buf, tuple, ExecGetResultType(&node->ps),
-                    node->outputFunArray);
-        elog(DEBUG3, buf.data);
-        pfree(buf.data);
-    }
-#endif
-
+    TupSetVirtualTupleNValid(slot, ((TupleBatch)slot->PRIVATE_tb)->ncols);
     return slot;
 }
 
@@ -403,7 +340,7 @@ SendTupleBatch(MotionLayerState *mlStates,
      */
     pMNEntry = getMotionNodeEntry(mlStates, motNodeID, "SendTuple");
 
-    /*
+    MemTuple tuple = tbSerialization(tuplebatch);
     if (targetRoute != BROADCAST_SEGIDX)
     {
         struct directTransportBuffer b;
@@ -428,15 +365,11 @@ SendTupleBatch(MotionLayerState *mlStates,
             }
         }
     }
-    */
 
     /* Create and store the serialized form, and some stats about it. */
     oldCtxt = MemoryContextSwitchTo(mlStates->motion_layer_mctx);
 
-    MemTuple tuple = palloc0(sizeof(MemTuple) + 1024);
-    for(int i = 0;i < 1024;i ++)
-        tuple->PRIVATE_mt_bits[i] = (char)(i % 255);
-    memtuple_set_size(tuple,NULL,sizeof(MemTuple) + 1024);
+
     SerializeTupleIntoChunks(tuple, &pMNEntry->ser_tup_info, &tcList);
     pfree(tuple);
 

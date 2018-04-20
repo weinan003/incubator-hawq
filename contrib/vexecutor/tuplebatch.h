@@ -75,7 +75,7 @@ void tbDestroy(TupleBatch* tb);
 /* free one column */
 void tbfreeColumn(vtype** vh,int colid);
 /* TupleBatch serialization function */
-unsigned char * tbSerialization(TupleBatch tb);
+MemTuple tbSerialization(TupleBatch tb);
 /* TupleBatch deserialization function */
 TupleBatch tbDeserialization(unsigned char *buffer);
 
