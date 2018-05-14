@@ -37,12 +37,12 @@ getVScanMethod(int tableType)
                     //APPENDONLYSCAN
                     {
                             &AppendOnlyVScanNext, &BeginVScanAppendOnlyRelation, &EndVScanAppendOnlyRelation,
-                                                                                 NULL,NULL,NULL
+                            &ReScanAppendOnlyRelation, &MarkRestrNotAllowed, &MarkRestrNotAllowed
                     },
                     //PARQUETSCAN
                     {
                             &ParquetVScanNext, &BeginScanParquetRelation, &EndScanParquetRelation,
-                            NULL,NULL,NULL
+                            &ReScanParquetRelation, &MarkRestrNotAllowed, &MarkRestrNotAllowed
                     }
             };
 
@@ -56,6 +56,7 @@ getVScanMethod(int tableType)
     return &scanMethods[tableType];
 }
 
+
 /*
  * ExecTableVScanVirtualLayer
  *          translate a batch of tuple to single one if scan parent is normal execution node
@@ -66,9 +67,10 @@ getVScanMethod(int tableType)
 TupleTableSlot *ExecTableVScanVirtualLayer(ScanState *scanState)
 {
     VectorizedState* vs = (VectorizedState*)scanState->ps.vectorized;
-    VectorizedState* pvs = vs->parent->vectorized;
 
-    if(pvs->vectorized)
+    /* if vs->parent is NULL, it represent that the parent is non-vectorized */
+    if(vs->parent && vs->parent->vectorized &&
+       ((VectorizedState*)vs->parent->vectorized)->vectorized)
         return ExecTableVScan(scanState);
     else
     {
